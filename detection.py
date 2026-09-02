@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import os
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+
+import requests
 
 import cv2
 import numpy as np
@@ -111,34 +114,46 @@ class PipelineResult:
 _yolo_model = None
 _vit_model = None
 _vit_processor = None
-_roboflow_client = None
 
 
+def _image_to_base64(image: Image.Image) -> str:
+    buffered = io.BytesIO()
+    if image.mode != "RGB":
+        image = image.convert("RGB")
+    image.save(buffered, format="JPEG", quality=90)
+    return base64.b64encode(buffered.getvalue()).decode("ascii")
 
-def _load_roboflow_client():
-    """환경 변수의 API key로 Roboflow Workflow client를 생성한다."""
-    global _roboflow_client
 
-    if _roboflow_client is not None:
-        return _roboflow_client
-
+def _run_roboflow_detection_workflow(image: Image.Image) -> dict | list | None:
     api_key = os.getenv("ROBOFLOW_API_KEY", "").strip()
     if not api_key:
         return None
 
-    try:
-        from inference_sdk import InferenceHTTPClient
-    except ImportError as exc:
-        raise RuntimeError(
-            "inference-sdk가 설치되지 않았습니다. "
-            "PowerShell에서 `python -m pip install -U inference-sdk`를 실행하세요."
-        ) from exc
+    url = f"{ROBOFLOW_API_URL}/infer/workflows/{ROBOFLOW_WORKSPACE_NAME}/{ROBOFLOW_WORKFLOW_ID}"
+    image_base64 = _image_to_base64(image)
 
-    _roboflow_client = InferenceHTTPClient(
-        api_url=ROBOFLOW_API_URL,
-        api_key=api_key,
-    )
-    return _roboflow_client
+    payload = {
+        "inputs": {
+            "image": {
+                "type": "base64",
+                "value": image_base64,
+            }
+        }
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        if response.status_code == 404:
+            alt_url = f"{ROBOFLOW_API_URL}/{ROBOFLOW_WORKSPACE_NAME}/workflows/{ROBOFLOW_WORKFLOW_ID}"
+            response = requests.post(alt_url, json=payload, headers=headers, timeout=30)
+        response.raise_for_status()
+        return response.json()
+    except Exception as exc:
+        raise RuntimeError(f"Roboflow Workflow 호출 실패: {exc}") from exc
 
 
 def _collect_roboflow_prediction_dicts(payload) -> list[dict]:
@@ -177,19 +192,13 @@ def _roboflow_detect(
     - []: Roboflow 호출은 성공했지만 탐지 객체가 없음
     - list: (x1, y1, width, height, confidence, class_name)
     """
-    client = _load_roboflow_client()
-    if client is None:
+    api_key = os.getenv("ROBOFLOW_API_KEY", "").strip()
+    if not api_key:
         return None
 
-    try:
-        result = client.run_workflow(
-            workspace_name=ROBOFLOW_WORKSPACE_NAME,
-            workflow_id=ROBOFLOW_WORKFLOW_ID,
-            images={"image": image},
-            use_cache=True,
-        )
-    except Exception as exc:
-        raise RuntimeError(f"Roboflow Workflow 호출 실패: {exc}") from exc
+    result = _run_roboflow_detection_workflow(image)
+    if result is None:
+        return None
 
     raw_predictions = _collect_roboflow_prediction_dicts(result)
     boxes: list[tuple[int, int, int, int, float, str | None]] = []

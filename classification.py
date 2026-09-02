@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
+import io
 import os
-
+import requests
 from PIL import Image
 
 
@@ -9,38 +11,49 @@ ROBOFLOW_API_URL = "https://serverless.roboflow.com"
 ROBOFLOW_WORKSPACE_NAME = "rladbswl"
 ROBOFLOW_CLASSIFICATION_WORKFLOW_ID = "first-classification-big-vfirst-classification-big-11-vit-base-patch16-224-in21k-t1-logic"
 
-_client = None
+
+def _image_to_base64(image: Image.Image) -> str:
+    buffered = io.BytesIO()
+    if image.mode != "RGB":
+        image = image.convert("RGB")
+    image.save(buffered, format="JPEG", quality=90)
+    return base64.b64encode(buffered.getvalue()).decode("ascii")
 
 
-def _get_client():
-    global _client
-
-    if _client is not None:
-        return _client
-
+def _run_roboflow_workflow(image: Image.Image) -> dict | list:
     api_key = os.getenv("ROBOFLOW_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError(
             "ROBOFLOW_API_KEY 환경변수가 설정되지 않았습니다."
         )
 
+    url = f"{ROBOFLOW_API_URL}/infer/workflows/{ROBOFLOW_WORKSPACE_NAME}/{ROBOFLOW_CLASSIFICATION_WORKFLOW_ID}"
+    image_base64 = _image_to_base64(image)
+
+    payload = {
+        "inputs": {
+            "image": {
+                "type": "base64",
+                "value": image_base64,
+            }
+        }
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+
     try:
-        from inference_sdk import InferenceHTTPClient, InferenceConfiguration
-    except ImportError as exc:
+        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        if response.status_code == 404:
+            alt_url = f"{ROBOFLOW_API_URL}/{ROBOFLOW_WORKSPACE_NAME}/workflows/{ROBOFLOW_CLASSIFICATION_WORKFLOW_ID}"
+            response = requests.post(alt_url, json=payload, headers=headers, timeout=30)
+        response.raise_for_status()
+        return response.json()
+    except Exception as exc:
         raise RuntimeError(
-            "inference-sdk가 설치되지 않았습니다."
+            f"Roboflow Classification 호출 실패: {exc}"
         ) from exc
-
-    _client = InferenceHTTPClient(
-        api_url=ROBOFLOW_API_URL,
-        api_key=api_key,
-    ).configure(
-        InferenceConfiguration(
-            api_key_transport="header"
-        )
-    )
-
-    return _client
 
 
 def _to_float(value):
@@ -108,23 +121,7 @@ def classify_ship(image: Image.Image) -> tuple[str, float]:
     함정 crop 1장을 Roboflow Classification Workflow에 전달하고
     (분류 클래스, confidence)를 반환한다.
     """
-
-    client = _get_client()
-
-    try:
-        result = client.run_workflow(
-            workspace_name=ROBOFLOW_WORKSPACE_NAME,
-            workflow_id=ROBOFLOW_CLASSIFICATION_WORKFLOW_ID,
-            images={
-                "image": image
-            },
-            use_cache=True,
-        )
-    except Exception as exc:
-        raise RuntimeError(
-            f"Roboflow Classification 호출 실패: {exc}"
-        ) from exc
-
+    result = _run_roboflow_workflow(image)
     parsed = _find_classification_result(result)
 
     if parsed is None:
