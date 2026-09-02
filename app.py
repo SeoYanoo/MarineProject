@@ -33,7 +33,7 @@ clickable_detection_image = components_v2.component(
     .clickable-image-root img { width: 100%; height: auto; border-radius: 8px; display: block; }
     .clickable-image-root button { position: absolute; z-index: 5; padding: 0; margin: 0;
         border: 0; background: transparent; cursor: pointer; box-sizing: border-box; }
-    .clickable-image-root button:hover { background: rgba(0,201,167,.16); outline: 3px solid #00c9a7; }
+    .clickable-image-root button:hover { background: rgba(126, 169, 205, .12); outline: 2px solid #8fb9dc; }
     """,
     js="""
     export default function(component) {
@@ -1085,6 +1085,525 @@ h3 {
 .stSubheader, [data-testid="stSubheader"] {
     color: var(--text-primary) !important;
 }
+
+/* ── Refined maritime console theme ────────────────────────── */
+:root {
+    --ocean-deep: #07111d;
+    --ocean-mid: #0d1826;
+    --ocean-light: #142235;
+    --accent-teal: #9bbcd6;
+    --accent-cyan: #78a6cd;
+    --accent-glow: transparent;
+    --card-bg: #0d1826;
+    --card-border: #233247;
+    --text-primary: #f2f5f8;
+    --text-muted: #8997a9;
+    --success: #7fc6a4;
+    --warning: #d9b879;
+}
+
+html, body, [class*="css"] {
+    font-family: 'Noto Sans KR', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    letter-spacing: -0.015em;
+}
+
+.stApp {
+    background: #07111d;
+    color: var(--text-primary);
+}
+
+.block-container {
+    max-width: 1320px;
+    padding: 28px 32px 20px;
+}
+
+[data-testid="stVerticalBlock"] { gap: .65rem !important; }
+
+.hero-header {
+    background: transparent;
+    border: 0;
+    border-bottom: 1px solid var(--card-border);
+    border-radius: 0;
+    padding: 12px 2px 24px;
+    margin-bottom: 22px;
+    box-shadow: none;
+    overflow: visible;
+}
+
+.hero-header::before { display: none; }
+
+.hero-badge {
+    gap: 8px;
+    margin: 0 0 13px;
+    padding: 0;
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    color: #7990a8;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .16em;
+}
+
+.hero-badge::before {
+    content: '';
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--success);
+}
+
+.hero-top { align-items: flex-end; gap: 28px; }
+
+.main-title {
+    color: #f5f7fa;
+    font-size: clamp(1.55rem, 2.3vw, 2.15rem);
+    font-weight: 600;
+    letter-spacing: -.045em;
+    line-height: 1.25;
+}
+
+.sub-title {
+    margin-top: 8px;
+    color: var(--text-muted);
+    font-size: .8rem;
+}
+
+.hero-stats {
+    gap: 0;
+    padding: 0 0 3px;
+    flex-wrap: nowrap;
+}
+
+.hero-stat-item {
+    gap: 5px;
+    padding: 0 13px;
+    border-right: 1px solid var(--card-border);
+    color: #708095;
+    font-size: .73rem;
+    white-space: nowrap;
+}
+
+.hero-stat-item:first-child { padding-left: 0; }
+.hero-stat-item:last-child { padding-right: 0; border-right: 0; }
+.hero-stat-item span { color: #c5d0db; font-weight: 500; }
+
+.stTabs [data-baseweb="tab-list"] {
+    gap: 24px;
+    min-height: 42px;
+    margin-bottom: 20px;
+    padding: 0;
+    background: transparent;
+    border: 0;
+    border-bottom: 1px solid var(--card-border);
+    border-radius: 0;
+}
+
+.stTabs [data-baseweb="tab"] {
+    min-height: 42px;
+    padding: 0 2px 13px;
+    border: 0 !important;
+    border-bottom: 2px solid transparent !important;
+    border-radius: 0;
+    color: #718096;
+    font-size: .84rem;
+    font-weight: 500;
+    transition: color .16s ease, border-color .16s ease;
+}
+
+.stTabs [data-baseweb="tab"]:hover { color: #c8d1da; }
+
+.stTabs [aria-selected="true"] {
+    background: transparent !important;
+    border-color: #89abc8 !important;
+    box-shadow: none;
+    color: #eef3f7 !important;
+}
+
+.stTabs [data-baseweb="tab-panel"] { padding-top: 4px; }
+
+[data-testid="stFileUploader"] {
+    padding: 0 !important;
+    background: transparent !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+}
+
+[data-testid="stFileUploader"] section {
+    min-height: 230px;
+    padding: 52px 28px 38px !important;
+    background: #0a1522 !important;
+    border: 1px dashed #34465b !important;
+    border-radius: 10px !important;
+    transition: background .16s ease, border-color .16s ease;
+}
+
+[data-testid="stFileUploader"] section:hover {
+    background: #0d1927 !important;
+    border-color: #6684a0 !important;
+}
+
+[data-testid="stFileUploader"] section::before {
+    content: 'MEDIA INPUT';
+    top: 38px;
+    color: #67788c;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .16em;
+}
+
+[data-testid="stFileUploader"] section::after {
+    content: 'JPG, PNG, MP4, AVI, MOV';
+    bottom: 30px;
+    color: #536275;
+    font-size: 10px;
+    letter-spacing: .07em;
+}
+
+[data-testid="stFileUploader"] section button,
+.stButton button {
+    min-height: 36px !important;
+    padding: 7px 15px !important;
+    background: #152336 !important;
+    border: 1px solid #304259 !important;
+    border-radius: 7px !important;
+    box-shadow: none !important;
+    color: #d9e2ea !important;
+    font-size: .78rem !important;
+    font-weight: 500 !important;
+}
+
+[data-testid="stFileUploader"] section button:hover,
+.stButton button:hover {
+    background: #1a2b40 !important;
+    border-color: #58738e !important;
+    color: #ffffff !important;
+}
+
+.output-visual-wrap {
+    background: #0a1522;
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    box-shadow: none;
+}
+
+.output-visual-wrap.empty {
+    min-height: 360px;
+    background: #0a1522;
+    border: 1px solid var(--card-border);
+}
+
+.video-placeholder-text {
+    color: #b7c3cf;
+    font-size: .9rem;
+    font-weight: 500;
+}
+
+.video-placeholder-sub { color: #637388; font-size: .74rem; }
+
+.dashboard-panel {
+    padding: 20px;
+    background: #0d1826;
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    box-shadow: none;
+}
+
+.dashboard-panel-title {
+    margin-bottom: 18px;
+    padding-bottom: 13px;
+    border-bottom: 1px solid var(--card-border);
+    color: #c8d2dc;
+    font-size: .76rem;
+    font-weight: 600;
+    letter-spacing: .04em;
+}
+
+.metric-grid-2 { gap: 8px; }
+
+.metric-card {
+    padding: 13px 14px;
+    background: #101d2c;
+    border: 1px solid #223249;
+    border-radius: 8px;
+    box-shadow: none;
+}
+
+.metric-card:hover {
+    background: #101d2c;
+    border-color: #344861;
+    transform: none;
+    box-shadow: none;
+}
+
+.metric-label {
+    color: #748399;
+    font-size: .69rem;
+    font-weight: 500;
+    letter-spacing: .01em;
+}
+
+.metric-value {
+    margin-top: 7px;
+    color: #eef2f6;
+    font-size: 1.25rem;
+    font-weight: 600;
+    letter-spacing: -.03em;
+}
+
+.metric-value.accent,
+.metric-value.cyan { color: #a8c2d8; }
+
+.compact-divider,
+hr { border-color: #223047 !important; margin: 13px 0 !important; }
+
+.object-label {
+    margin-bottom: 9px;
+    color: #78889d;
+    font-size: .68rem;
+    font-weight: 600;
+    letter-spacing: .04em;
+}
+
+.object-tags { gap: 6px; }
+
+.object-tag {
+    padding: 6px 9px;
+    background: #111f30;
+    border: 1px solid #263950;
+    border-radius: 6px;
+    color: #8e9db0;
+    font-size: .7rem;
+}
+
+.object-tag strong { color: #dce4eb; font-weight: 600; }
+
+.active-status {
+    margin-top: 13px;
+    padding: 9px 11px;
+    background: rgba(127, 198, 164, .06);
+    border: 1px solid rgba(127, 198, 164, .2);
+    border-radius: 7px;
+    color: #88bca3;
+    font-size: .68rem;
+    letter-spacing: .06em;
+}
+
+.status-dot {
+    width: 5px;
+    height: 5px;
+    background: var(--success);
+    box-shadow: none;
+    animation: none;
+}
+
+[data-testid="stRadio"] label,
+.st-key-intrusion_environment [data-testid="stRadio"] label {
+    padding: 7px 12px !important;
+    background: transparent !important;
+    border: 1px solid #2a3a4f !important;
+    border-radius: 7px !important;
+    color: #9eacbb !important;
+    font-size: .76rem !important;
+}
+
+[data-testid="stRadio"] label:hover,
+.st-key-intrusion_environment [data-testid="stRadio"] label:hover {
+    background: #0f1d2d !important;
+    border-color: #516a84 !important;
+}
+
+[data-testid="stRadio"] label:has(input:checked),
+.st-key-intrusion_environment [data-testid="stRadio"] label:has(input:checked) {
+    background: #17273a !important;
+    border-color: #6f91af !important;
+    box-shadow: none !important;
+}
+
+[data-testid="stRadio"] label:has(input:checked) p,
+[data-testid="stRadio"] label:has(input:checked) span,
+.st-key-intrusion_environment [data-testid="stRadio"] label:has(input:checked) p,
+.st-key-intrusion_environment [data-testid="stRadio"] label:has(input:checked) span {
+    color: #e4ebf1 !important;
+    font-weight: 500 !important;
+}
+
+.result-file-bar {
+    margin: 4px 0 10px;
+    color: #8291a4;
+    font-size: .75rem;
+}
+
+.st-key-ship_result_box,
+.st-key-intrusion_result_box,
+[data-testid="stVideo"] {
+    background: #08121e;
+    border-color: var(--card-border) !important;
+    border-radius: 9px !important;
+    box-shadow: none;
+}
+
+[data-testid="stImage"] img { border-radius: 7px; }
+
+[data-testid="stMetric"] {
+    padding: 12px 14px;
+    background: #0f1c2b;
+    border: 1px solid #223249;
+    border-radius: 8px;
+}
+
+[data-testid="stMetricLabel"] { color: #7d8da1 !important; }
+[data-testid="stMetricValue"] { color: #eef2f6 !important; font-weight: 600 !important; }
+
+.stAlert {
+    background: #0f1c2b !important;
+    border: 1px solid #293b51 !important;
+    border-radius: 8px !important;
+    color: #aeb9c5 !important;
+}
+
+.evaluation-grid { gap: 8px; margin-top: 12px; }
+
+.evaluation-card {
+    grid-template-columns: minmax(140px, 170px) minmax(120px, 145px) 1fr;
+    gap: 20px;
+    min-height: 78px;
+    padding: 16px 20px;
+    background: #0d1826;
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+}
+
+.evaluation-name {
+    color: #91abc2;
+    font-size: .78rem;
+    font-weight: 600;
+}
+
+.evaluation-value {
+    color: #f0f4f7;
+    font-size: 1.1rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+.evaluation-desc { color: #78879a; font-size: .74rem; }
+
+.dropzone-hint { color: #68788c; font-size: .7rem; }
+
+.app-footer {
+    margin-top: 28px;
+    padding: 18px 0 6px;
+    border-top: 1px solid #1d2b3d;
+    color: #526176;
+    font-size: .65rem;
+    letter-spacing: .08em;
+}
+
+@media (max-width: 900px) {
+    .block-container { padding: 18px 18px 14px; }
+    .hero-top { align-items: flex-start; }
+    .hero-stats { width: 100%; overflow-x: auto; }
+    .evaluation-card { grid-template-columns: 1fr 1fr; gap: 7px 14px; }
+    .evaluation-desc { grid-column: 1 / -1; }
+}
+
+@media (max-width: 640px) {
+    .hero-header { padding-top: 4px; }
+    .hero-stat-item { padding: 0 9px; }
+    .stTabs [data-baseweb="tab-list"] { gap: 18px; }
+    .output-visual-wrap.empty { min-height: 280px; padding: 24px; }
+    .evaluation-card { grid-template-columns: 1fr; }
+    .evaluation-desc { grid-column: auto; }
+}
+
+/* ── Technical edge & ambient navigation field ────────────── */
+html,
+body,
+[data-testid="stAppViewContainer"],
+[data-testid="stMain"] {
+    background-color: #07111d !important;
+}
+
+[data-testid="stMain"] {
+    background-image:
+        linear-gradient(rgba(126, 159, 188, .038) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(126, 159, 188, .038) 1px, transparent 1px),
+        linear-gradient(rgba(126, 159, 188, .016) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(126, 159, 188, .016) 1px, transparent 1px),
+        radial-gradient(circle at 82% 8%, rgba(71, 112, 148, .10), transparent 34%),
+        radial-gradient(circle at 18% 88%, rgba(35, 72, 101, .08), transparent 30%);
+    background-size: 48px 48px, 48px 48px, 12px 12px, 12px 12px, auto, auto;
+}
+
+.section-card,
+.workflow-panel,
+.io-panel,
+.media-card,
+.output-visual-wrap,
+.output-visual-wrap.empty,
+.dashboard-panel,
+.metric-card,
+.object-tag,
+.active-status,
+.evaluation-card,
+[data-testid="stMetric"],
+.stAlert,
+[data-testid="stVideo"],
+[data-testid="stFileUploader"] section,
+[data-testid="stFileUploader"] section button,
+.stButton button,
+[data-testid="stRadio"] label,
+.st-key-intrusion_environment [data-testid="stRadio"] label,
+.st-key-ship_result_box,
+.st-key-intrusion_result_box {
+    border-radius: 2px !important;
+}
+
+[data-testid="stImage"] img,
+.clickable-image-root img,
+.media-thumb { border-radius: 1px !important; }
+
+.dashboard-panel,
+.evaluation-card,
+.output-visual-wrap,
+.st-key-ship_result_box,
+.st-key-intrusion_result_box {
+    position: relative;
+}
+
+.dashboard-panel::before,
+.evaluation-card::before {
+    content: '';
+    position: absolute;
+    top: -1px;
+    left: -1px;
+    width: 34px;
+    height: 1px;
+    background: #789ab8;
+    pointer-events: none;
+}
+
+.hero-header {
+    border-bottom-color: #304158;
+}
+
+.hero-header::after {
+    content: 'SURVEILLANCE GRID  ·  SECTOR 01';
+    position: absolute;
+    right: 2px;
+    bottom: -18px;
+    color: #435369;
+    font-size: 9px;
+    font-weight: 500;
+    letter-spacing: .12em;
+}
+
+.stTabs [aria-selected="true"] {
+    border-bottom-color: #9bb8cf !important;
+}
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -1471,16 +1990,16 @@ def render_dashboard_tab2(summary: dict | None = None, mode: str = "demo"):
 
 st.markdown("""
 <div class="hero-header">
-    <div class="hero-badge">● LIVE MONITORING</div>
+    <div class="hero-badge">MARITIME MONITORING</div>
     <div class="hero-top">
         <div class="hero-title-block">
             <div class="main-title">해양 침투 객체 감시 시스템</div>
+            <div class="sub-title">영상 기반 객체 탐지 및 함정 분류 통합 관제</div>
         </div>
         <div class="hero-stats">
-            <div class="hero-stat-item">탐지 <span>YOLOv26</span></div>
-            <div class="hero-stat-item">분류 <span>ViT</span></div>
-            <div class="hero-stat-item">데이터 <span>Roboflow</span></div>
-            <div class="hero-stat-item">상태 <span style="color:#34d399">ACTIVE</span></div>
+            <div class="hero-stat-item">Detection <span>YOLOv26</span></div>
+            <div class="hero-stat-item">Classification <span>ViT</span></div>
+            <div class="hero-stat-item">Status <span style="color:#7fc6a4">Active</span></div>
         </div>
     </div>
 </div>
