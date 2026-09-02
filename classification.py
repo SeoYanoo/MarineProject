@@ -6,28 +6,37 @@ import os
 import requests
 from PIL import Image
 
+from config import INFERENCE_JPEG_QUALITY
+
 
 ROBOFLOW_API_URL = "https://serverless.roboflow.com"
 ROBOFLOW_WORKSPACE_NAME = "rladbswl"
 ROBOFLOW_CLASSIFICATION_WORKFLOW_ID = "first-classification-big-vfirst-classification-big-11-vit-base-patch16-224-in21k-t1-logic"
+_classification_url = (
+    f"{ROBOFLOW_API_URL}/infer/workflows/{ROBOFLOW_WORKSPACE_NAME}/"
+    f"{ROBOFLOW_CLASSIFICATION_WORKFLOW_ID}"
+)
+_http_session = requests.Session()
+_http_session.headers.update({"Content-Type": "application/json"})
 
 
 def _image_to_base64(image: Image.Image) -> str:
     buffered = io.BytesIO()
     if image.mode != "RGB":
         image = image.convert("RGB")
-    image.save(buffered, format="JPEG", quality=90)
+    image.save(buffered, format="JPEG", quality=INFERENCE_JPEG_QUALITY)
     return base64.b64encode(buffered.getvalue()).decode("ascii")
 
 
 def _run_roboflow_workflow(image: Image.Image) -> dict | list:
+    global _classification_url
+
     api_key = os.getenv("ROBOFLOW_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError(
             "ROBOFLOW_API_KEY 환경변수가 설정되지 않았습니다."
         )
 
-    url = f"{ROBOFLOW_API_URL}/infer/workflows/{ROBOFLOW_WORKSPACE_NAME}/{ROBOFLOW_CLASSIFICATION_WORKFLOW_ID}"
     image_base64 = _image_to_base64(image)
 
     payload = {
@@ -38,16 +47,26 @@ def _run_roboflow_workflow(image: Image.Image) -> dict | list:
             }
         }
     }
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-    }
+    headers = {"Authorization": f"Bearer {api_key}"}
 
     try:
-        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        response = _http_session.post(
+            _classification_url,
+            json=payload,
+            headers=headers,
+            timeout=(5, 30),
+        )
         if response.status_code == 404:
-            alt_url = f"{ROBOFLOW_API_URL}/{ROBOFLOW_WORKSPACE_NAME}/workflows/{ROBOFLOW_CLASSIFICATION_WORKFLOW_ID}"
-            response = requests.post(alt_url, json=payload, headers=headers, timeout=30)
+            _classification_url = (
+                f"{ROBOFLOW_API_URL}/{ROBOFLOW_WORKSPACE_NAME}/workflows/"
+                f"{ROBOFLOW_CLASSIFICATION_WORKFLOW_ID}"
+            )
+            response = _http_session.post(
+                _classification_url,
+                json=payload,
+                headers=headers,
+                timeout=(5, 30),
+            )
         response.raise_for_status()
         return response.json()
     except Exception as exc:

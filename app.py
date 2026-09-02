@@ -1,6 +1,6 @@
 import base64
-import importlib
 import io
+import math
 import os
 import tempfile
 
@@ -17,11 +17,20 @@ import detection as _detection
 import classification as _classification
 import roboflow_metrics as _roboflow_metrics
 
-importlib.reload(_detection)
-importlib.reload(_classification)
-importlib.reload(_roboflow_metrics)
+if os.getenv("MARINE_DEV_RELOAD", "").strip() == "1":
+    import importlib
+
+    importlib.reload(_detection)
+    importlib.reload(_classification)
+    importlib.reload(_roboflow_metrics)
 
 from classification import classify_ship
+from config import (
+    VIDEO_INFERENCE_FPS,
+    VIDEO_MAX_DIMENSION,
+    VIDEO_MAX_INFERENCE_CALLS,
+    VIDEO_OUTPUT_FPS,
+)
 from roboflow_metrics import get_detection_metrics, get_display_metrics
 
 
@@ -1463,6 +1472,117 @@ hr { border-color: #223047 !important; margin: 13px 0 !important; }
     color: #aeb9c5 !important;
 }
 
+/* ── Processing state ── */
+.processing-state {
+    position: relative;
+    display: grid;
+    grid-template-columns: 34px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 15px;
+    min-height: 86px;
+    margin: 2px 0 12px;
+    padding: 17px 20px;
+    overflow: hidden;
+    background: #0b1724;
+    border: 1px solid #2a3a4f;
+    border-radius: 2px;
+}
+
+.processing-state::before {
+    content: '';
+    position: absolute;
+    top: -1px;
+    left: -1px;
+    width: 42px;
+    height: 1px;
+    background: #8aaac4;
+}
+
+.processing-indicator {
+    position: relative;
+    width: 28px;
+    height: 28px;
+    border: 1px solid #30445b;
+    border-radius: 50%;
+}
+
+.processing-indicator::before {
+    content: '';
+    position: absolute;
+    inset: 4px;
+    border: 2px solid transparent;
+    border-top-color: #9bbbd3;
+    border-right-color: #607f9b;
+    border-radius: 50%;
+    animation: processing-rotate .9s linear infinite;
+}
+
+.processing-copy { min-width: 0; }
+
+.processing-kicker {
+    margin-bottom: 4px;
+    color: #6f8499;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .16em;
+}
+
+.processing-title {
+    color: #edf2f6;
+    font-size: .86rem;
+    font-weight: 600;
+    letter-spacing: -.015em;
+}
+
+.processing-desc {
+    margin-top: 4px;
+    color: #7e8da0;
+    font-size: .69rem;
+}
+
+.processing-meta {
+    color: #64778b;
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: .11em;
+    white-space: nowrap;
+}
+
+.processing-track {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    height: 2px;
+    overflow: hidden;
+    background: #132236;
+}
+
+.processing-track::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    width: 28%;
+    background: linear-gradient(90deg, transparent, #7399b8, transparent);
+    animation: processing-scan 1.8s ease-in-out infinite;
+}
+
+@keyframes processing-rotate { to { transform: rotate(360deg); } }
+@keyframes processing-scan {
+    from { transform: translateX(-110%); }
+    to { transform: translateX(390%); }
+}
+
+[data-testid="stSpinner"] {
+    padding: 12px 14px !important;
+    background: #0b1724 !important;
+    border: 1px solid #2a3a4f !important;
+    border-radius: 2px !important;
+}
+
+[data-testid="stSpinner"] p,
+[data-testid="stSpinner"] span { color: #dfe7ee !important; }
+
 .evaluation-grid { gap: 8px; margin-top: 12px; }
 
 .evaluation-card {
@@ -1516,6 +1636,13 @@ hr { border-color: #223047 !important; margin: 13px 0 !important; }
     .output-visual-wrap.empty { min-height: 280px; padding: 24px; }
     .evaluation-card { grid-template-columns: 1fr; }
     .evaluation-desc { grid-column: auto; }
+    .processing-state { grid-template-columns: 30px 1fr; padding: 15px 16px; }
+    .processing-meta { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .processing-indicator::before,
+    .processing-track::after { animation: none; }
 }
 
 /* ── Technical edge & ambient navigation field ────────────── */
@@ -1779,7 +1906,42 @@ def render_object_detection_stats(summary: dict, mode: str):
     """, unsafe_allow_html=True)
 
 
-@st.cache_data(show_spinner="영상 전체 프레임을 탐지하고 있습니다...")
+def _new_video_summary() -> dict:
+    return {
+        "total": 0,
+        "size_counts": {"대형": 0, "중형": 0, "소형": 0},
+        "object_counts": {"ship": 0, "drone": 0, "person": 0},
+        "confidence_sum": 0.0,
+    }
+
+
+def _accumulate_video_summary(summary: dict, predictions: list) -> None:
+    for prediction in predictions:
+        summary["total"] += 1
+        summary["confidence_sum"] += prediction.detection_confidence
+        if prediction.object_class == "ship":
+            size_counts = summary["size_counts"]
+            size_counts[prediction.size_class] = size_counts.get(prediction.size_class, 0) + 1
+        object_counts = summary["object_counts"]
+        object_counts[prediction.object_class] = object_counts.get(prediction.object_class, 0) + 1
+
+
+def _finalize_video_summary(summary: dict) -> dict:
+    total = summary["total"]
+    return {
+        "total": total,
+        "size_counts": summary["size_counts"],
+        "object_counts": summary["object_counts"],
+        "avg_detection_confidence": round(summary["confidence_sum"] / total, 2) if total else 0.0,
+        "avg_classification_confidence": 0.0,
+    }
+
+
+@st.cache_data(
+    show_spinner=False,
+    ttl=3600,
+    max_entries=1,
+)
 def process_video_bytes(data: bytes, suffix: str, task: str):
     input_path = output_path = None
     capture = writer = None
@@ -1794,46 +1956,92 @@ def process_video_bytes(data: bytes, suffix: str, task: str):
         if not capture.isOpened():
             raise ValueError("영상 파일을 열 수 없습니다.")
 
-        fps = capture.get(cv2.CAP_PROP_FPS) or 24.0
-        width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        source_fps = float(capture.get(cv2.CAP_PROP_FPS) or 24.0)
+        if not math.isfinite(source_fps) or source_fps <= 0:
+            source_fps = 24.0
+        source_width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+        source_height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
         frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        output_scale = min(
+            1.0,
+            VIDEO_MAX_DIMENSION / max(source_width, source_height, 1),
+        )
+        width = max(2, int(round(source_width * output_scale / 2)) * 2)
+        height = max(2, int(round(source_height * output_scale / 2)) * 2)
+        output_stride = max(1, int(round(source_fps / min(source_fps, VIDEO_OUTPUT_FPS))))
+        output_fps = source_fps / output_stride
+        inference_stride = max(1, int(round(source_fps / VIDEO_INFERENCE_FPS)))
+        if frame_count > 0:
+            inference_stride = max(
+                inference_stride,
+                math.ceil(frame_count / VIDEO_MAX_INFERENCE_CALLS),
+            )
+
         writer = cv2.VideoWriter(
             output_path,
             cv2.VideoWriter_fourcc(*"mp4v"),
-            fps,
+            output_fps,
             (width, height),
         )
         if not writer.isOpened():
             raise ValueError("결과 영상을 생성할 수 없습니다.")
 
         first_image = first_result = None
-        all_predictions = []
+        latest_predictions = []
+        video_summary = _new_video_summary()
+        source_frame_index = 0
+        next_inference_frame = 0
+        analyzed_frames = 0
+        written_frames = 0
+
         while True:
             ok, frame = capture.read()
             if not ok:
                 break
-            image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            pipeline_result = run_pipeline(image, task=task)
-            annotated = draw_predictions(image, pipeline_result.predictions)
-            annotated_array = np.asarray(annotated, dtype=np.uint8)
-            annotated_bgr = cv2.cvtColor(annotated_array, cv2.COLOR_RGB2BGR)
-            writer.write(annotated_bgr)
-            all_predictions.extend(pipeline_result.predictions)
-            if first_image is None:
-                first_image = image
-                first_result = pipeline_result
+
+            if source_frame_index % output_stride == 0:
+                if (frame.shape[1], frame.shape[0]) != (width, height):
+                    frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
+                image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+
+                if first_result is None or source_frame_index >= next_inference_frame:
+                    pipeline_result = run_pipeline(image, task=task)
+                    latest_predictions = pipeline_result.predictions
+                    _accumulate_video_summary(video_summary, latest_predictions)
+                    analyzed_frames += 1
+                    next_inference_frame = source_frame_index + inference_stride
+                    if first_result is None:
+                        first_image = image
+                        first_result = pipeline_result
+
+                annotated = draw_predictions(image, latest_predictions)
+                annotated_array = np.asarray(annotated, dtype=np.uint8)
+                annotated_bgr = cv2.cvtColor(annotated_array, cv2.COLOR_RGB2BGR)
+                writer.write(annotated_bgr)
+                written_frames += 1
+
+            source_frame_index += 1
 
         capture.release()
         capture = None
         writer.release()
         writer = None
-        if first_image is None or first_result is None:
+        if first_image is None or first_result is None or written_frames == 0:
             raise ValueError("영상에 처리할 프레임이 없습니다.")
 
         with open(output_path, "rb") as result_file:
             video_bytes = result_file.read()
-        return video_bytes, first_image, first_result, all_predictions, frame_count
+        return (
+            video_bytes,
+            first_image,
+            first_result,
+            first_result.predictions,
+            frame_count,
+            analyzed_frames,
+            _finalize_video_summary(video_summary),
+            output_fps,
+        )
     finally:
         if capture is not None:
             capture.release()
@@ -1863,19 +2071,30 @@ def process_upload(uploaded_file, task: str = "detection", environment: str | No
         media_meta = f"Image · {image.size[0]} x {image.size[1]}"
         pipeline_result = run_pipeline(image, task=task)
         predictions = pipeline_result.predictions
+        summary = summarize_predictions(predictions)
         annotated = draw_predictions(image, predictions)
         video_bytes = None
+        analyzed_frames = None
     elif mime_type.startswith("video") or suffix in video_suffixes:
-        video_bytes, image, pipeline_result, predictions, frame_count = process_video_bytes(
-            data, suffix or ".mp4", task
-        )
+        (
+            video_bytes,
+            image,
+            pipeline_result,
+            predictions,
+            frame_count,
+            analyzed_frames,
+            summary,
+            output_fps,
+        ) = process_video_bytes(data, suffix or ".mp4", task)
         frame_index = 0
-        media_meta = f"Video · {frame_count} frames"
+        media_meta = (
+            f"Video · {frame_count} frames · "
+            f"{analyzed_frames} analyzed · {output_fps:.1f} fps output"
+        )
         annotated = None
     else:
         raise ValueError("지원하지 않는 파일 형식입니다.")
 
-    summary = summarize_predictions(predictions)
     json_payload = pipeline_to_json(
         pipeline_result,
         image.size,
@@ -1884,6 +2103,12 @@ def process_upload(uploaded_file, task: str = "detection", environment: str | No
     )
     if environment is not None:
         json_payload["environment"] = environment
+    if analyzed_frames is not None:
+        json_payload["video_analysis"] = {
+            "source_frames": frame_count,
+            "analyzed_frames": analyzed_frames,
+            "output_fps": round(output_fps, 2),
+        }
 
     return {
         "image": image,
@@ -2034,10 +2259,44 @@ with tab1:
             st.session_state["live_upload_saved"] = uploaded_file
             st.rerun()
     if uploaded_file is not None:
+        upload_name = uploaded_file.name.lower()
+        is_processing_video = (
+            (uploaded_file.type or "").startswith("video")
+            or upload_name.endswith((".mp4", ".avi", ".mov"))
+        )
+        processing_title = (
+            "영상을 분석하고 있습니다"
+            if is_processing_video
+            else "이미지를 분석하고 있습니다"
+        )
+        processing_desc = (
+            "프레임 선별 · 객체 탐지 · 결과 영상 구성 순서로 처리됩니다"
+            if is_processing_video
+            else "객체 탐지와 결과 시각화를 준비하고 있습니다"
+        )
+        processing_meta = "FRAME PIPELINE" if is_processing_video else "IMAGE PIPELINE"
+        processing_placeholder = st.empty()
+        processing_placeholder.markdown(
+            f"""
+            <div class="processing-state" role="status" aria-live="polite">
+                <div class="processing-indicator" aria-hidden="true"></div>
+                <div class="processing-copy">
+                    <div class="processing-kicker">ANALYSIS IN PROGRESS</div>
+                    <div class="processing-title">{processing_title}</div>
+                    <div class="processing-desc">{processing_desc}</div>
+                </div>
+                <div class="processing-meta">{processing_meta}</div>
+                <div class="processing-track" aria-hidden="true"></div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         try:
             result = process_upload(uploaded_file, task="detection")
         except Exception as exc:
             st.error(f"파일 처리 중 오류: {exc}")
+        finally:
+            processing_placeholder.empty()
 
     if result is not None:
         info_col, replace_col = st.columns([7, 1.4])

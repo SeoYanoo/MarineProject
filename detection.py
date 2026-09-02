@@ -5,9 +5,11 @@ from __future__ import annotations
 import base64
 import io
 import json
+import math
 import os
 import tempfile
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 import requests
@@ -18,6 +20,10 @@ from PIL import Image, ImageDraw, ImageFont
 
 from config import (
     FINE_CLASSES,
+    INFERENCE_JPEG_QUALITY,
+    INFERENCE_MAX_DIMENSION,
+    MAX_DETECTIONS_PER_FRAME,
+    NMS_IOU_THRESHOLD,
     SHIP_SIZE_CLASSES,
     VIT_MODEL_PATH,
     YOLO_CONF_THRESHOLD,
@@ -114,22 +120,30 @@ class PipelineResult:
 _yolo_model = None
 _vit_model = None
 _vit_processor = None
+_yolo_load_attempted = False
+_vit_load_attempted = False
+_roboflow_detection_url = (
+    f"{ROBOFLOW_API_URL}/infer/workflows/{ROBOFLOW_WORKSPACE_NAME}/{ROBOFLOW_WORKFLOW_ID}"
+)
+_http_session = requests.Session()
+_http_session.headers.update({"Content-Type": "application/json"})
 
 
 def _image_to_base64(image: Image.Image) -> str:
     buffered = io.BytesIO()
     if image.mode != "RGB":
         image = image.convert("RGB")
-    image.save(buffered, format="JPEG", quality=90)
+    image.save(buffered, format="JPEG", quality=INFERENCE_JPEG_QUALITY)
     return base64.b64encode(buffered.getvalue()).decode("ascii")
 
 
 def _run_roboflow_detection_workflow(image: Image.Image) -> dict | list | None:
+    global _roboflow_detection_url
+
     api_key = os.getenv("ROBOFLOW_API_KEY", "").strip()
     if not api_key:
         return None
 
-    url = f"{ROBOFLOW_API_URL}/infer/workflows/{ROBOFLOW_WORKSPACE_NAME}/{ROBOFLOW_WORKFLOW_ID}"
     image_base64 = _image_to_base64(image)
 
     payload = {
@@ -140,16 +154,25 @@ def _run_roboflow_detection_workflow(image: Image.Image) -> dict | list | None:
             }
         }
     }
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-    }
+    headers = {"Authorization": f"Bearer {api_key}"}
 
     try:
-        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        response = _http_session.post(
+            _roboflow_detection_url,
+            json=payload,
+            headers=headers,
+            timeout=(5, 30),
+        )
         if response.status_code == 404:
-            alt_url = f"{ROBOFLOW_API_URL}/{ROBOFLOW_WORKSPACE_NAME}/workflows/{ROBOFLOW_WORKFLOW_ID}"
-            response = requests.post(alt_url, json=payload, headers=headers, timeout=30)
+            _roboflow_detection_url = (
+                f"{ROBOFLOW_API_URL}/{ROBOFLOW_WORKSPACE_NAME}/workflows/{ROBOFLOW_WORKFLOW_ID}"
+            )
+            response = _http_session.post(
+                _roboflow_detection_url,
+                json=payload,
+                headers=headers,
+                timeout=(5, 30),
+            )
         response.raise_for_status()
         return response.json()
     except Exception as exc:
@@ -179,6 +202,80 @@ def _collect_roboflow_prediction_dicts(payload) -> list[dict]:
 
     walk(payload)
     return found
+
+
+def _prepare_inference_image(
+    image: Image.Image,
+) -> tuple[Image.Image, float, float]:
+    """추론 전송량을 줄이고 결과 좌표를 원본 크기로 되돌릴 비율을 반환한다."""
+    width, height = image.size
+    longest_side = max(width, height)
+    if longest_side <= INFERENCE_MAX_DIMENSION:
+        return image, 1.0, 1.0
+
+    resize_ratio = INFERENCE_MAX_DIMENSION / longest_side
+    resized_width = max(1, int(round(width * resize_ratio)))
+    resized_height = max(1, int(round(height * resize_ratio)))
+    resized = image.resize(
+        (resized_width, resized_height),
+        Image.Resampling.BILINEAR,
+    )
+    return resized, width / resized_width, height / resized_height
+
+
+def _box_iou(
+    first: tuple[int, int, int, int, float, str | None],
+    second: tuple[int, int, int, int, float, str | None],
+) -> float:
+    first_x2 = first[0] + first[2]
+    first_y2 = first[1] + first[3]
+    second_x2 = second[0] + second[2]
+    second_y2 = second[1] + second[3]
+
+    intersection_width = max(0, min(first_x2, second_x2) - max(first[0], second[0]))
+    intersection_height = max(0, min(first_y2, second_y2) - max(first[1], second[1]))
+    intersection = intersection_width * intersection_height
+    if intersection <= 0:
+        return 0.0
+
+    union = first[2] * first[3] + second[2] * second[3] - intersection
+    return intersection / max(union, 1)
+
+
+def _filter_detection_boxes(
+    boxes: list[tuple[int, int, int, int, float, str | None]],
+    image_width: int,
+    image_height: int,
+) -> list[tuple[int, int, int, int, float, str | None]]:
+    """낮은 신뢰도·잘못된 좌표·중복 박스를 제거하고 프레임별 개수를 제한한다."""
+    valid: list[tuple[int, int, int, int, float, str | None]] = []
+    for x, y, width, height, confidence, label in boxes:
+        if not math.isfinite(confidence) or confidence < YOLO_CONF_THRESHOLD:
+            continue
+
+        x = max(0, min(int(round(x)), image_width - 1))
+        y = max(0, min(int(round(y)), image_height - 1))
+        width = max(0, min(int(round(width)), image_width - x))
+        height = max(0, min(int(round(height)), image_height - y))
+        if width < 2 or height < 2:
+            continue
+        valid.append((x, y, width, height, float(confidence), label))
+
+    selected: list[tuple[int, int, int, int, float, str | None]] = []
+    for candidate in sorted(valid, key=lambda item: item[4], reverse=True):
+        candidate_label = str(candidate[5] or "").strip().lower()
+        duplicate = any(
+            candidate_label == str(existing[5] or "").strip().lower()
+            and _box_iou(candidate, existing) >= NMS_IOU_THRESHOLD
+            for existing in selected
+        )
+        if duplicate:
+            continue
+        selected.append(candidate)
+        if len(selected) >= MAX_DETECTIONS_PER_FRAME:
+            break
+
+    return selected
 
 
 def _roboflow_detect(
@@ -285,9 +382,10 @@ def _normalize_model_label(
 
 
 def _load_yolo():
-    global _yolo_model
-    if _yolo_model is not None:
+    global _yolo_model, _yolo_load_attempted
+    if _yolo_load_attempted:
         return _yolo_model
+    _yolo_load_attempted = True
 
     if not YOLO_MODEL_PATH.exists():
         return None
@@ -302,9 +400,10 @@ def _load_yolo():
 
 
 def _load_vit():
-    global _vit_model, _vit_processor
-    if _vit_model is not None:
+    global _vit_model, _vit_processor, _vit_load_attempted
+    if _vit_load_attempted:
         return _vit_model, _vit_processor
+    _vit_load_attempted = True
 
     if not VIT_MODEL_PATH.exists():
         return None, None
@@ -435,19 +534,41 @@ def _encode_crop(crop: Image.Image, max_size: int = 96) -> str:
 
 def run_pipeline(image: Image.Image, task: str = "detection") -> PipelineResult:
     width, height = image.size
+    inference_image, scale_x, scale_y = _prepare_inference_image(image)
 
     # 1순위: Roboflow Workflow
-    roboflow_boxes = _roboflow_detect(image)
+    roboflow_boxes = _roboflow_detect(inference_image)
 
     if roboflow_boxes is not None:
-        detection_boxes = roboflow_boxes
+        detection_boxes = [
+            (
+                int(round(x * scale_x)),
+                int(round(y * scale_y)),
+                int(round(box_width * scale_x)),
+                int(round(box_height * scale_y)),
+                confidence,
+                label,
+            )
+            for x, y, box_width, box_height, confidence, label in roboflow_boxes
+        ]
         mode = "roboflow"
         pipeline_steps = ["input", "roboflow_workflow_detection", "visualization"]
     else:
         # API key가 설정되지 않은 경우에만 기존 로컬 YOLO를 시도.
-        detection_boxes = _yolo_detect(image)
-
-        if detection_boxes:
+        local_model = _load_yolo()
+        if local_model is not None:
+            detection_boxes = _yolo_detect(inference_image)
+            detection_boxes = [
+                (
+                    int(round(x * scale_x)),
+                    int(round(y * scale_y)),
+                    int(round(box_width * scale_x)),
+                    int(round(box_height * scale_y)),
+                    confidence,
+                    label,
+                )
+                for x, y, box_width, box_height, confidence, label in detection_boxes
+            ]
             mode = "local-yolo"
             pipeline_steps = ["input", "local_yolo_detection", "visualization"]
         else:
@@ -468,6 +589,8 @@ def run_pipeline(image: Image.Image, task: str = "detection") -> PipelineResult:
             mode = "demo"
             pipeline_steps = ["input", "demo_detection", "visualization"]
 
+    detection_boxes = _filter_detection_boxes(detection_boxes, width, height)
+
     predictions: list[ShipPrediction] = []
     for index, (x, y, w, h, det_conf, model_label) in enumerate(detection_boxes):
         x = max(0, min(int(x), width - 1))
@@ -483,8 +606,6 @@ def run_pipeline(image: Image.Image, task: str = "detection") -> PipelineResult:
             w,
             h,
         )
-
-        crop = image.crop((x, y, x + w, y + h))
 
         # Detection 단계에서는 객체 탐지만 수행한다. 사용자가 선택한 crop의
         # 톤급 분류는 classification.py가 별도로 담당한다.
@@ -502,7 +623,7 @@ def run_pipeline(image: Image.Image, task: str = "detection") -> PipelineResult:
                 size_class=size_class,
                 fine_class=fine_class,
                 classification_confidence=round(float(cls_conf), 2),
-                crop_base64=_encode_crop(crop),
+                crop_base64=None,
             )
         )
 
@@ -512,18 +633,22 @@ def run_pipeline(image: Image.Image, task: str = "detection") -> PipelineResult:
         pipeline_steps=pipeline_steps,
     )
 
+@lru_cache(maxsize=8)
+def _get_label_font(font_size: int):
+    try:
+        return ImageFont.truetype("C:/Windows/Fonts/malgunbd.ttf", font_size)
+    except OSError:
+        try:
+            return ImageFont.truetype("arialbd.ttf", font_size)
+        except OSError:
+            return ImageFont.load_default()
+
+
 def draw_predictions(image: Image.Image, predictions: list[ShipPrediction]) -> Image.Image:
     output = image.copy()
     draw = ImageDraw.Draw(output)
-
-    font_size = max(20, int(min(image.size) * 0.032))
-    try:
-        label_font = ImageFont.truetype("C:/Windows/Fonts/malgunbd.ttf", font_size)
-    except OSError:
-        try:
-            label_font = ImageFont.truetype("arialbd.ttf", font_size)
-        except OSError:
-            label_font = ImageFont.load_default()
+    font_size = max(16, int(min(image.size) * 0.026))
+    label_font = _get_label_font(font_size)
 
     for pred in predictions:
         color = SIZE_COLORS.get(pred.size_class, "#FF69B4")
