@@ -5,6 +5,7 @@ import os
 import tempfile
 
 import cv2
+import imageio_ffmpeg
 import numpy as np
 import streamlit as st
 import streamlit.components.v2 as components_v2
@@ -1978,16 +1979,24 @@ def process_video_bytes(data: bytes, suffix: str, task: str):
                 math.ceil(frame_count / VIDEO_MAX_INFERENCE_CALLS),
             )
 
-        writer = cv2.VideoWriter(
+        writer = imageio_ffmpeg.write_frames(
             output_path,
-            cv2.VideoWriter_fourcc(*"mp4v"),
-            output_fps,
             (width, height),
+            pix_fmt_in="rgb24",
+            pix_fmt_out="yuv420p",
+            fps=output_fps,
+            quality=6,
+            codec="libx264",
+            macro_block_size=2,
+            ffmpeg_log_level="error",
+            output_params=["-preset", "veryfast", "-movflags", "+faststart"],
         )
-        if not writer.isOpened():
-            raise ValueError("결과 영상을 생성할 수 없습니다.")
+        writer.send(None)
 
-        first_image = first_result = None
+        fallback_image = fallback_result = None
+        preview_image = preview_result = None
+        preview_frame_index = 0
+        latest_result = None
         latest_predictions = []
         video_summary = _new_video_summary()
         source_frame_index = 0
@@ -2005,48 +2014,58 @@ def process_video_bytes(data: bytes, suffix: str, task: str):
                     frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
                 image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
-                if first_result is None or source_frame_index >= next_inference_frame:
+                if latest_result is None or source_frame_index >= next_inference_frame:
                     pipeline_result = run_pipeline(image, task=task)
+                    latest_result = pipeline_result
                     latest_predictions = pipeline_result.predictions
                     _accumulate_video_summary(video_summary, latest_predictions)
                     analyzed_frames += 1
                     next_inference_frame = source_frame_index + inference_stride
-                    if first_result is None:
-                        first_image = image
-                        first_result = pipeline_result
+                    if fallback_result is None:
+                        fallback_image = image
+                        fallback_result = pipeline_result
+                    if preview_result is None and latest_predictions:
+                        preview_image = image
+                        preview_result = pipeline_result
+                        preview_frame_index = source_frame_index
 
                 annotated = draw_predictions(image, latest_predictions)
-                annotated_array = np.asarray(annotated, dtype=np.uint8)
-                annotated_bgr = cv2.cvtColor(annotated_array, cv2.COLOR_RGB2BGR)
-                writer.write(annotated_bgr)
+                annotated_array = np.ascontiguousarray(annotated, dtype=np.uint8)
+                writer.send(annotated_array)
                 written_frames += 1
 
             source_frame_index += 1
 
         capture.release()
         capture = None
-        writer.release()
+        writer.close()
         writer = None
-        if first_image is None or first_result is None or written_frames == 0:
+        if fallback_image is None or fallback_result is None or written_frames == 0:
             raise ValueError("영상에 처리할 프레임이 없습니다.")
+
+        if preview_image is None or preview_result is None:
+            preview_image = fallback_image
+            preview_result = fallback_result
+            preview_frame_index = 0
 
         with open(output_path, "rb") as result_file:
             video_bytes = result_file.read()
         return (
             video_bytes,
-            first_image,
-            first_result,
-            first_result.predictions,
+            preview_image,
+            preview_result,
+            preview_result.predictions,
             frame_count,
             analyzed_frames,
             _finalize_video_summary(video_summary),
             output_fps,
+            preview_frame_index,
         )
     finally:
         if capture is not None:
             capture.release()
         if writer is not None:
-            writer.release()
+            writer.close()
         for path in (input_path, output_path):
             if path and os.path.exists(path):
                 try:
@@ -2085,8 +2104,9 @@ def process_upload(uploaded_file, task: str = "detection", environment: str | No
             analyzed_frames,
             summary,
             output_fps,
+            preview_frame_index,
         ) = process_video_bytes(data, suffix or ".mp4", task)
-        frame_index = 0
+        frame_index = preview_frame_index
         media_meta = (
             f"Video · {frame_count} frames · "
             f"{analyzed_frames} analyzed · {output_fps:.1f} fps output"
@@ -2108,6 +2128,7 @@ def process_upload(uploaded_file, task: str = "detection", environment: str | No
             "source_frames": frame_count,
             "analyzed_frames": analyzed_frames,
             "output_fps": round(output_fps, 2),
+            "preview_frame_index": preview_frame_index,
         }
 
     return {
@@ -2313,7 +2334,7 @@ with tab1:
                 with st.container(border=True, key="ship_result_box"):
                     if result["is_video"]:
                         st.video(result["video_bytes"], format="video/mp4")
-                        st.caption("아래 첫 프레임의 바운딩 박스를 클릭해 분류할 영역을 선택하세요.")
+                        st.caption("아래 대표 탐지 프레임의 바운딩 박스를 클릭해 분류할 영역을 선택하세요.")
                         selected_box = render_clickable_detections(result["image"], result["predictions"])
                     else:
                         selected_box = render_clickable_detections(result["image"], result["predictions"])

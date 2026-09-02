@@ -3,6 +3,7 @@ opencv-python-headless
 pillow
 numpy
 requests
+imageio-ffmpeg
 
 # YOLO / ViT 모델 연동 시 추가 설치
 # ultralytics
