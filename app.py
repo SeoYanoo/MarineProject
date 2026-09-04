@@ -1890,10 +1890,11 @@ body,
 
 .st-key-classification_eval_csv [data-testid="stFileUploader"],
 .st-key-tracking_eval_csv [data-testid="stFileUploader"] {
-    height: 126px !important;
-    min-height: 126px !important;
+    height: auto !important;
+    min-height: 0 !important;
     margin-top: 10px !important;
     margin-bottom: 12px !important;
+    overflow: visible !important;
 }
 
 .st-key-classification_eval_csv [data-testid="stFileUploader"] section,
@@ -2373,9 +2374,10 @@ st.markdown(f"""
 # Tabs
 # ============================================================
 
-tab1, tab3 = st.tabs([
+tab_detection, tab_performance, tab_quantitative = st.tabs([
     "객체 탐지",
     "모델 성능평가",
+    "정량평가",
 ])
 
 
@@ -2383,7 +2385,7 @@ tab1, tab3 = st.tabs([
 # TAB 1 — 실시간 감시
 # ============================================================
 
-with tab1:
+with tab_detection:
     result = None
     uploaded_file = st.session_state.get("live_upload_saved")
     if uploaded_file is None:
@@ -2565,10 +2567,10 @@ with tab1:
 
 
 # ============================================================
-# TAB 3 — 탐지 결과
+# TAB 2 — 모델 성능평가
 # ============================================================
 
-with tab3:
+with tab_performance:
     st.markdown('<div class="object-label">평가 대상</div>', unsafe_allow_html=True)
 
     evaluation_options = ["전체", "대형 함정", "중형 함정", "소형 함정", "드론", "사람"]
@@ -2667,6 +2669,11 @@ with tab3:
     else:
         st.info("객체 탐지 탭에서 영상을 분석하면 실제 추적 진단이 표시됩니다.")
 
+# ============================================================
+# TAB 3 — 사용자 검증 데이터 정량평가
+# ============================================================
+
+with tab_quantitative:
     st.markdown("""
     <div class="quant-eval-intro">
         <div class="quant-eval-kicker">USER VALIDATION</div>
