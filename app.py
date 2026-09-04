@@ -1767,6 +1767,176 @@ body,
     border-bottom-color: #9bb8cf !important;
 }
 
+/* ── User-provided quantitative evaluation ──────────────── */
+.quant-eval-intro {
+    margin: 24px 0 12px;
+    padding: 18px 20px;
+    background: #0a1623;
+    border: 1px solid #2a3d52;
+    border-left: 3px solid #789ab8;
+}
+
+.quant-eval-kicker {
+    margin-bottom: 7px;
+    color: #789ab8;
+    font-size: .72rem;
+    font-weight: 700;
+    letter-spacing: .14em;
+}
+
+.quant-eval-title {
+    margin-bottom: 7px;
+    color: #eef3f7;
+    font-size: 1.05rem;
+    font-weight: 650;
+}
+
+.quant-eval-copy {
+    max-width: 920px;
+    color: #9aa9b8;
+    font-size: .88rem;
+    line-height: 1.7;
+}
+
+.st-key-offline_evaluation_type [data-testid="stRadio"] {
+    margin-bottom: 8px;
+}
+
+.st-key-offline_evaluation_type [data-testid="stRadio"] > label {
+    color: #aab8c6 !important;
+    font-size: .82rem !important;
+    font-weight: 600 !important;
+}
+
+.st-key-offline_evaluation_type [data-testid="stRadio"] > div {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 220px));
+    gap: 8px;
+}
+
+.st-key-offline_evaluation_type [data-testid="stRadio"] label[data-baseweb="radio"] {
+    min-height: 42px;
+    padding: 9px 14px !important;
+    background: #0d1927 !important;
+    border: 1px solid #30445b !important;
+    color: #aebdca !important;
+}
+
+.st-key-offline_evaluation_type [data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked) {
+    background: #142537 !important;
+    border-color: #7d9cb8 !important;
+    color: #f2f6f9 !important;
+    box-shadow: inset 3px 0 0 #7d9cb8;
+}
+
+.st-key-offline_evaluation_type [data-testid="stRadio"] label[data-baseweb="radio"] p,
+.st-key-offline_evaluation_type [data-testid="stRadio"] label[data-baseweb="radio"] span {
+    color: inherit !important;
+    font-size: .86rem !important;
+    font-weight: 600 !important;
+}
+
+.quant-eval-guide {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin: 10px 0 12px;
+    border-top: 1px solid #26394d;
+    border-bottom: 1px solid #26394d;
+    background: #091522;
+}
+
+.quant-eval-guide-item {
+    min-height: 76px;
+    padding: 14px 16px;
+}
+
+.quant-eval-guide-item + .quant-eval-guide-item {
+    border-left: 1px solid #26394d;
+}
+
+.quant-eval-guide-label {
+    display: block;
+    margin-bottom: 8px;
+    color: #708399;
+    font-size: .7rem;
+    font-weight: 700;
+    letter-spacing: .1em;
+}
+
+.quant-eval-guide-value {
+    color: #cbd6df;
+    font-size: .86rem;
+    line-height: 1.6;
+}
+
+.quant-eval-guide-value code {
+    padding: 2px 5px;
+    background: #111f2e;
+    border: 1px solid #2a4055;
+    border-radius: 0;
+    color: #dbe7ef;
+    font-size: .78rem;
+}
+
+.quant-eval-result-title {
+    margin: 18px 0 9px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #26394d;
+    color: #cfd9e1;
+    font-size: .82rem;
+    font-weight: 650;
+    letter-spacing: .04em;
+}
+
+.st-key-classification_eval_csv [data-testid="stFileUploader"],
+.st-key-tracking_eval_csv [data-testid="stFileUploader"] {
+    height: 126px !important;
+    min-height: 126px !important;
+    margin-top: 10px !important;
+    margin-bottom: 12px !important;
+}
+
+.st-key-classification_eval_csv [data-testid="stFileUploader"] section,
+.st-key-tracking_eval_csv [data-testid="stFileUploader"] section {
+    height: 126px !important;
+    min-height: 126px !important;
+    padding: 0 !important;
+    background: #091522 !important;
+    border-color: #3a526a !important;
+}
+
+.st-key-classification_eval_csv [data-testid="stFileUploader"] section::before,
+.st-key-tracking_eval_csv [data-testid="stFileUploader"] section::before {
+    content: 'CSV FILE';
+    top: 35px;
+    bottom: auto;
+    color: #8ba4ba;
+    font-size: .72rem;
+    letter-spacing: .16em;
+    transform: translateX(-50%);
+}
+
+.st-key-classification_eval_csv [data-testid="stFileUploader"] section::after,
+.st-key-tracking_eval_csv [data-testid="stFileUploader"] section::after {
+    content: '클릭하여 파일 선택 · CSV / UTF-8';
+    top: 76px;
+    bottom: auto;
+    color: #73869a;
+    font-size: .76rem;
+    letter-spacing: .02em;
+    transform: translateX(-50%);
+}
+
+@media (max-width: 640px) {
+    .quant-eval-intro { padding: 16px; }
+    .st-key-offline_evaluation_type [data-testid="stRadio"] > div,
+    .quant-eval-guide { grid-template-columns: 1fr; }
+    .quant-eval-guide-item + .quant-eval-guide-item {
+        border-top: 1px solid #26394d;
+        border-left: 0;
+    }
+}
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -2497,76 +2667,141 @@ with tab3:
     else:
         st.info("객체 탐지 탭에서 영상을 분석하면 실제 추적 진단이 표시됩니다.")
 
-    with st.expander("분류·추적 정량평가 CSV", expanded=False):
-        st.caption(
-            "분류 CSV: true_label, predicted_label · "
-            "추적 CSV: true_count, predicted_count, id_switches(선택)"
+    st.markdown("""
+    <div class="quant-eval-intro">
+        <div class="quant-eval-kicker">USER VALIDATION</div>
+        <div class="quant-eval-title">사용자 검증 데이터 정량평가</div>
+        <div class="quant-eval-copy">
+            위의 Detection 성능 지표와 별도로, 직접 준비한 정답과 모델 결과를 비교합니다.
+            CSV는 평가 계산에만 사용되며 객체 탐지와 드론 추적 결과에는 영향을 주지 않습니다.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    evaluation_type = st.radio(
+        "평가 방식",
+        ["톤급 분류", "영상 추적"],
+        horizontal=True,
+        key="offline_evaluation_type",
+    )
+
+    if evaluation_type == "톤급 분류":
+        st.markdown("""
+        <div class="quant-eval-guide">
+            <div class="quant-eval-guide-item">
+                <span class="quant-eval-guide-label">CSV 필수 열</span>
+                <div class="quant-eval-guide-value">
+                    <code>true_label</code> 실제 톤급 · <code>predicted_label</code> 예측 톤급
+                </div>
+            </div>
+            <div class="quant-eval-guide-item">
+                <span class="quant-eval-guide-label">계산 결과</span>
+                <div class="quant-eval-guide-value">Accuracy · Macro F1 · 클래스별 혼동행렬</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.download_button(
+            "빈 분류 CSV 양식 받기",
+            data=b"\xef\xbb\xbftrue_label,predicted_label\n",
+            file_name="classification_evaluation_template.csv",
+            mime="text/csv",
+            key="classification_eval_template",
         )
-        classification_eval_col, tracking_eval_col = st.columns(2, gap="medium")
-        with classification_eval_col:
-            classification_eval_file = st.file_uploader(
-                "톤급 분류 평가 CSV",
-                type=["csv"],
-                key="classification_eval_csv",
-            )
-            if classification_eval_file is not None:
-                try:
-                    classification_evaluation = calculate_classification_metrics(
-                        read_csv_rows(classification_eval_file.getvalue())
-                    )
-                    class_metric_columns = st.columns(2)
-                    class_metric_columns[0].metric(
-                        "Accuracy",
-                        f"{classification_evaluation['accuracy']:.4f}",
-                    )
-                    class_metric_columns[1].metric(
-                        "Macro F1",
-                        f"{classification_evaluation['macro_f1']:.4f}",
-                    )
-                    st.caption(
-                        f"실제 평가 샘플 {classification_evaluation['samples']}개"
-                    )
-                    confusion_rows = []
-                    for true_label in classification_evaluation["labels"]:
-                        row = {"실제 클래스": true_label}
-                        row.update(classification_evaluation["confusion_matrix"][true_label])
-                        confusion_rows.append(row)
-                    st.dataframe(
-                        confusion_rows,
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-                except Exception as exc:
-                    st.error(f"분류 평가 CSV 오류: {exc}")
-        with tracking_eval_col:
-            tracking_eval_file = st.file_uploader(
-                "영상 추적 평가 CSV",
-                type=["csv"],
-                key="tracking_eval_csv",
-            )
-            if tracking_eval_file is not None:
-                try:
-                    tracking_evaluation = calculate_tracking_metrics(
-                        read_csv_rows(tracking_eval_file.getvalue())
-                    )
-                    track_metric_columns = st.columns(2)
-                    track_metric_columns[0].metric(
-                        "Count MAE",
-                        f"{tracking_evaluation['count_mae']:.3f}",
-                    )
-                    track_metric_columns[1].metric(
-                        "정확 집계율",
-                        f"{tracking_evaluation['exact_count_rate'] * 100:.1f}%",
-                    )
-                    st.metric(
-                        "ID 변경 횟수",
-                        tracking_evaluation["total_id_switches"],
-                    )
-                    st.caption(
-                        f"실제 평가 영상 {tracking_evaluation['videos']}개"
-                    )
-                except Exception as exc:
-                    st.error(f"추적 평가 CSV 오류: {exc}")
+        classification_eval_file = st.file_uploader(
+            "평가할 톤급 분류 CSV",
+            type=["csv"],
+            key="classification_eval_csv",
+            help="한 행에는 한 이미지의 실제 톤급과 모델이 예측한 톤급을 입력합니다.",
+        )
+        if classification_eval_file is not None:
+            try:
+                classification_evaluation = calculate_classification_metrics(
+                    read_csv_rows(classification_eval_file.getvalue())
+                )
+                st.markdown(
+                    '<div class="quant-eval-result-title">분류 평가 결과</div>',
+                    unsafe_allow_html=True,
+                )
+                class_metric_columns = st.columns(3)
+                class_metric_columns[0].metric(
+                    "Accuracy",
+                    f"{classification_evaluation['accuracy']:.4f}",
+                )
+                class_metric_columns[1].metric(
+                    "Macro F1",
+                    f"{classification_evaluation['macro_f1']:.4f}",
+                )
+                class_metric_columns[2].metric(
+                    "평가 샘플",
+                    f"{classification_evaluation['samples']}개",
+                )
+                confusion_rows = []
+                for true_label in classification_evaluation["labels"]:
+                    row = {"실제 클래스": true_label}
+                    row.update(classification_evaluation["confusion_matrix"][true_label])
+                    confusion_rows.append(row)
+                st.caption("혼동행렬 · 행은 실제 클래스, 열은 예측 클래스입니다.")
+                st.dataframe(
+                    confusion_rows,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            except Exception as exc:
+                st.error(f"분류 평가 CSV 오류: {exc}")
+    else:
+        st.markdown("""
+        <div class="quant-eval-guide">
+            <div class="quant-eval-guide-item">
+                <span class="quant-eval-guide-label">CSV 열 구성</span>
+                <div class="quant-eval-guide-value">
+                    <code>true_count</code> 실제 객체 수 · <code>predicted_count</code> 추적 결과 수 ·
+                    <code>id_switches</code> ID 변경 횟수(선택)
+                </div>
+            </div>
+            <div class="quant-eval-guide-item">
+                <span class="quant-eval-guide-label">계산 결과</span>
+                <div class="quant-eval-guide-value">Count MAE · 정확 집계율 · 전체 ID 변경 횟수</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.download_button(
+            "빈 추적 CSV 양식 받기",
+            data=b"\xef\xbb\xbfvideo_id,true_count,predicted_count,id_switches\n",
+            file_name="tracking_evaluation_template.csv",
+            mime="text/csv",
+            key="tracking_eval_template",
+        )
+        tracking_eval_file = st.file_uploader(
+            "평가할 영상 추적 CSV",
+            type=["csv"],
+            key="tracking_eval_csv",
+            help="한 행에는 한 영상의 실제 객체 수와 추적 결과 수를 입력합니다.",
+        )
+        if tracking_eval_file is not None:
+            try:
+                tracking_evaluation = calculate_tracking_metrics(
+                    read_csv_rows(tracking_eval_file.getvalue())
+                )
+                st.markdown(
+                    '<div class="quant-eval-result-title">추적 평가 결과</div>',
+                    unsafe_allow_html=True,
+                )
+                track_metric_columns = st.columns(3)
+                track_metric_columns[0].metric(
+                    "Count MAE",
+                    f"{tracking_evaluation['count_mae']:.3f}",
+                )
+                track_metric_columns[1].metric(
+                    "정확 집계율",
+                    f"{tracking_evaluation['exact_count_rate'] * 100:.1f}%",
+                )
+                track_metric_columns[2].metric(
+                    "ID 변경 횟수",
+                    tracking_evaluation["total_id_switches"],
+                )
+                st.caption(f"평가에 사용된 영상 {tracking_evaluation['videos']}개")
+            except Exception as exc:
+                st.error(f"추적 평가 CSV 오류: {exc}")
 
 
 # ============================================================
