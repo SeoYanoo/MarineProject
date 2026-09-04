@@ -2659,7 +2659,7 @@ st.markdown(f"""
     <div class="hero-top">
         <div class="hero-title-block">
             <div class="main-title">해양 침투 객체 감시 시스템</div>
-            <div class="sub-title">영상 기반 객체 탐지 및 함정 분류 통합 관제</div>
+            <div class="sub-title">사진/영상 기반 객체 탐지 및 함정 분류 통합 관제</div>
         </div>
         <div class="hero-stats">
             <div class="hero-stat-item">Detection <span>YOLOv26</span></div>
