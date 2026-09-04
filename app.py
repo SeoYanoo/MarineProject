@@ -1,5 +1,6 @@
 import base64
 import csv
+import hashlib
 import html
 import importlib
 import io
@@ -1802,6 +1803,21 @@ def render_workflow_sidebar():
 def clear_uploaded_file(widget_key: str):
     st.session_state.pop(widget_key, None)
     st.session_state.pop(f"{widget_key}_saved", None)
+    st.session_state.pop("processed_upload_key", None)
+    st.session_state.pop("processed_upload_result", None)
+
+
+def get_upload_cache_key(uploaded_file, task: str) -> str:
+    content_hash = hashlib.sha256(uploaded_file.getvalue()).hexdigest()
+    return ":".join(
+        (
+            "processing-v2",
+            task,
+            str(uploaded_file.name),
+            str(uploaded_file.type or ""),
+            content_hash,
+        )
+    )
 
 
 def render_clickable_detections(image: Image.Image, predictions: list) -> int | None:
@@ -2211,71 +2227,79 @@ with tab1:
             st.session_state["live_upload_saved"] = uploaded_file
             st.rerun()
     if uploaded_file is not None:
-        upload_name = uploaded_file.name.lower()
-        is_processing_video = (
-            (uploaded_file.type or "").startswith("video")
-            or upload_name.endswith((".mp4", ".avi", ".mov"))
-        )
-        processing_title = (
-            "영상을 분석하고 있습니다"
-            if is_processing_video
-            else "이미지를 분석하고 있습니다"
-        )
-        processing_desc = (
-            "프레임 선별 · 객체 탐지 · 결과 영상 구성 순서로 처리됩니다"
-            if is_processing_video
-            else "객체 탐지와 결과 시각화를 준비하고 있습니다"
-        )
-        processing_meta = "FRAME PIPELINE" if is_processing_video else "IMAGE PIPELINE"
-        processing_placeholder = st.empty()
-        progress_placeholder = st.empty()
-        progress_started_at = time.perf_counter()
-
-        def update_video_progress(progress: float, current_frame: int, total_frames: int):
-            elapsed = max(0.0, time.perf_counter() - progress_started_at)
-            if progress > 0 and progress < 1:
-                remaining = elapsed * (1 - progress) / progress
-                time_text = f"경과 {elapsed:.0f}초 · 예상 {remaining:.0f}초 남음"
-            elif progress >= 1:
-                time_text = f"완료 · {elapsed:.0f}초"
-            else:
-                time_text = "영상 정보를 확인하고 있습니다"
-            frame_text = (
-                f"{min(current_frame, total_frames):,} / {total_frames:,} 프레임"
-                if total_frames > 0
-                else f"{current_frame:,} 프레임"
+        upload_cache_key = get_upload_cache_key(uploaded_file, "detection")
+        if st.session_state.get("processed_upload_key") == upload_cache_key:
+            result = st.session_state.get("processed_upload_result")
+        else:
+            upload_name = uploaded_file.name.lower()
+            is_processing_video = (
+                (uploaded_file.type or "").startswith("video")
+                or upload_name.endswith((".mp4", ".avi", ".mov"))
             )
-            progress_placeholder.progress(
-                progress,
-                text=f"{frame_text} · {time_text}",
+            processing_title = (
+                "영상을 분석하고 있습니다"
+                if is_processing_video
+                else "이미지를 분석하고 있습니다"
             )
+            processing_desc = (
+                "프레임 선별 · 객체 탐지 · 결과 영상 구성 순서로 처리됩니다"
+                if is_processing_video
+                else "객체 탐지와 결과 시각화를 준비하고 있습니다"
+            )
+            processing_meta = "FRAME PIPELINE" if is_processing_video else "IMAGE PIPELINE"
+            processing_placeholder = st.empty()
+            progress_placeholder = st.empty()
+            progress_started_at = time.perf_counter()
 
-        processing_placeholder.markdown(
-            f"""
-            <div class="processing-state" role="status" aria-live="polite">
-                <div class="processing-indicator" aria-hidden="true"></div>
-                <div class="processing-copy">
-                    <div class="processing-kicker">ANALYSIS IN PROGRESS</div>
-                    <div class="processing-title">{processing_title}</div>
-                    <div class="processing-desc">{processing_desc}</div>
+            def update_video_progress(progress: float, current_frame: int, total_frames: int):
+                elapsed = max(0.0, time.perf_counter() - progress_started_at)
+                if progress > 0 and progress < 1:
+                    remaining = elapsed * (1 - progress) / progress
+                    time_text = f"경과 {elapsed:.0f}초 · 예상 {remaining:.0f}초 남음"
+                elif progress >= 1:
+                    time_text = f"완료 · {elapsed:.0f}초"
+                else:
+                    time_text = "영상 정보를 확인하고 있습니다"
+                frame_text = (
+                    f"{min(current_frame, total_frames):,} / {total_frames:,} 프레임"
+                    if total_frames > 0
+                    else f"{current_frame:,} 프레임"
+                )
+                progress_placeholder.progress(
+                    progress,
+                    text=f"{frame_text} · {time_text}",
+                )
+
+            processing_placeholder.markdown(
+                f"""
+                <div class="processing-state" role="status" aria-live="polite">
+                    <div class="processing-indicator" aria-hidden="true"></div>
+                    <div class="processing-copy">
+                        <div class="processing-kicker">ANALYSIS IN PROGRESS</div>
+                        <div class="processing-title">{processing_title}</div>
+                        <div class="processing-desc">{processing_desc}</div>
+                    </div>
+                    <div class="processing-meta">{processing_meta}</div>
+                    <div class="processing-track" aria-hidden="true"></div>
                 </div>
-                <div class="processing-meta">{processing_meta}</div>
-                <div class="processing-track" aria-hidden="true"></div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        try:
-            result = process_upload(
-                uploaded_file,
-                task="detection",
-                progress_callback=update_video_progress if is_processing_video else None,
+                """,
+                unsafe_allow_html=True,
             )
-        except Exception as exc:
-            st.error(f"파일 처리 중 오류: {exc}")
-        finally:
-            processing_placeholder.empty()
-            progress_placeholder.empty()
+            try:
+                result = process_upload(
+                    uploaded_file,
+                    task="detection",
+                    progress_callback=update_video_progress if is_processing_video else None,
+                )
+                st.session_state["processed_upload_key"] = upload_cache_key
+                st.session_state["processed_upload_result"] = result
+            except Exception as exc:
+                st.session_state.pop("processed_upload_key", None)
+                st.session_state.pop("processed_upload_result", None)
+                st.error(f"파일 처리 중 오류: {exc}")
+            finally:
+                processing_placeholder.empty()
+                progress_placeholder.empty()
 
     if result is not None:
         info_col, replace_col = st.columns([7, 1.4])

@@ -38,7 +38,7 @@ class VideoProcessingTests(unittest.TestCase):
                 "run_pipeline",
                 return_value=PipelineResult(predictions=[], mode="test"),
             ):
-                result = video_processing.process_video_bytes.__wrapped__(
+                result = video_processing.process_video_bytes(
                     video_bytes,
                     ".avi",
                     "detection",

@@ -7,7 +7,6 @@ import tempfile
 import cv2
 import imageio_ffmpeg
 import numpy as np
-import streamlit as st
 from PIL import Image
 
 from config import (
@@ -27,11 +26,6 @@ from tracking import (
 )
 
 
-@st.cache_data(
-    show_spinner=False,
-    ttl=3600,
-    max_entries=1,
-)
 def process_video_bytes(data: bytes, suffix: str, task: str, _progress_callback=None):
     input_path = output_path = None
     capture = writer = None
