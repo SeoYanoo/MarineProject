@@ -1907,34 +1907,141 @@ def render_object_detection_stats(summary: dict, mode: str):
     """, unsafe_allow_html=True)
 
 
-def _new_video_summary() -> dict:
+def _new_video_summary(image_width: int, image_height: int) -> dict:
     return {
-        "total": 0,
-        "size_counts": {"대형": 0, "중형": 0, "소형": 0},
-        "object_counts": {"ship": 0, "drone": 0, "person": 0},
-        "confidence_sum": 0.0,
+        "tracks": {},
+        "next_track_id": 1,
+        "step": 0,
+        "image_diagonal": math.hypot(image_width, image_height),
     }
 
 
 def _accumulate_video_summary(summary: dict, predictions: list) -> None:
-    for prediction in predictions:
-        summary["total"] += 1
-        summary["confidence_sum"] += prediction.detection_confidence
-        if prediction.object_class == "ship":
-            size_counts = summary["size_counts"]
-            size_counts[prediction.size_class] = size_counts.get(prediction.size_class, 0) + 1
-        object_counts = summary["object_counts"]
-        object_counts[prediction.object_class] = object_counts.get(prediction.object_class, 0) + 1
+    """프레임 간 객체를 연결해 같은 객체가 한 번만 집계되도록 한다."""
+    summary["step"] += 1
+    current_step = summary["step"]
+    tracks = summary["tracks"]
+    active_track_ids = [
+        track_id
+        for track_id, track in tracks.items()
+        if current_step - track["last_seen"] <= 8
+    ]
+
+    candidates = []
+    for prediction_index, prediction in enumerate(predictions):
+        pred_box = (prediction.x, prediction.y, prediction.width, prediction.height)
+        pred_center = (
+            prediction.x + prediction.width / 2,
+            prediction.y + prediction.height / 2,
+        )
+        for track_id in active_track_ids:
+            track = tracks[track_id]
+            if track["object_class"] != prediction.object_class:
+                continue
+
+            track_box = track["last_bbox"]
+            track_center = (
+                track_box[0] + track_box[2] / 2,
+                track_box[1] + track_box[3] / 2,
+            )
+            intersection_width = max(
+                0,
+                min(pred_box[0] + pred_box[2], track_box[0] + track_box[2])
+                - max(pred_box[0], track_box[0]),
+            )
+            intersection_height = max(
+                0,
+                min(pred_box[1] + pred_box[3], track_box[1] + track_box[3])
+                - max(pred_box[1], track_box[1]),
+            )
+            intersection = intersection_width * intersection_height
+            union = (
+                pred_box[2] * pred_box[3]
+                + track_box[2] * track_box[3]
+                - intersection
+            )
+            iou = intersection / max(union, 1)
+            center_distance = math.hypot(
+                pred_center[0] - track_center[0],
+                pred_center[1] - track_center[1],
+            )
+            motion_limit = max(
+                summary["image_diagonal"] * 0.035,
+                max(pred_box[2], pred_box[3], track_box[2], track_box[3]) * 3.0,
+            )
+            if iou >= 0.05 or center_distance <= motion_limit:
+                score = iou * 2 + max(0.0, 1 - center_distance / motion_limit)
+                candidates.append((score, prediction_index, track_id))
+
+    matched_predictions = set()
+    matched_tracks = set()
+    for _, prediction_index, track_id in sorted(candidates, reverse=True):
+        if prediction_index in matched_predictions or track_id in matched_tracks:
+            continue
+        prediction = predictions[prediction_index]
+        track = tracks[track_id]
+        prediction.track_id = track_id
+        track["last_bbox"] = (
+            prediction.x,
+            prediction.y,
+            prediction.width,
+            prediction.height,
+        )
+        track["last_seen"] = current_step
+        track["hits"] += 1
+        track["best_confidence"] = max(
+            track["best_confidence"],
+            prediction.detection_confidence,
+        )
+        size_votes = track["size_votes"]
+        size_votes[prediction.size_class] = size_votes.get(prediction.size_class, 0) + 1
+        matched_predictions.add(prediction_index)
+        matched_tracks.add(track_id)
+
+    for prediction_index, prediction in enumerate(predictions):
+        if prediction_index in matched_predictions:
+            continue
+        track_id = summary["next_track_id"]
+        summary["next_track_id"] += 1
+        prediction.track_id = track_id
+        tracks[track_id] = {
+            "object_class": prediction.object_class,
+            "last_bbox": (
+                prediction.x,
+                prediction.y,
+                prediction.width,
+                prediction.height,
+            ),
+            "last_seen": current_step,
+            "hits": 1,
+            "best_confidence": prediction.detection_confidence,
+            "size_votes": {prediction.size_class: 1},
+        }
 
 
 def _finalize_video_summary(summary: dict) -> dict:
-    total = summary["total"]
+    all_tracks = list(summary["tracks"].values())
+    confirmed_tracks = [track for track in all_tracks if track["hits"] >= 2]
+    counted_tracks = confirmed_tracks or all_tracks
+    size_counts = {"대형": 0, "중형": 0, "소형": 0}
+    object_counts = {"ship": 0, "drone": 0, "person": 0}
+    for track in counted_tracks:
+        object_class = track["object_class"]
+        object_counts[object_class] = object_counts.get(object_class, 0) + 1
+        if object_class == "ship":
+            size_class = max(track["size_votes"], key=track["size_votes"].get)
+            size_counts[size_class] = size_counts.get(size_class, 0) + 1
+
+    total = len(counted_tracks)
+    confidence_sum = sum(track["best_confidence"] for track in counted_tracks)
     return {
         "total": total,
-        "size_counts": summary["size_counts"],
-        "object_counts": summary["object_counts"],
-        "avg_detection_confidence": round(summary["confidence_sum"] / total, 2) if total else 0.0,
+        "size_counts": size_counts,
+        "object_counts": object_counts,
+        "avg_detection_confidence": round(confidence_sum / total, 2) if total else 0.0,
         "avg_classification_confidence": 0.0,
+        "count_label": "고유 객체 수",
+        "breakdown_label": "객체별 고유 개수",
     }
 
 
@@ -1998,7 +2105,7 @@ def process_video_bytes(data: bytes, suffix: str, task: str):
         preview_frame_index = 0
         latest_result = None
         latest_predictions = []
-        video_summary = _new_video_summary()
+        video_summary = _new_video_summary(width, height)
         source_frame_index = 0
         next_inference_frame = 0
         analyzed_frames = 0
@@ -2149,6 +2256,8 @@ def render_dashboard_tab1(summary: dict | None = None, mode: str = "demo"):
     counts = (summary or {}).get("object_counts", {})
     total = str((summary or {}).get("total", 0))
     avg_det = str((summary or {}).get("avg_detection_confidence", 0.0))
+    count_label = (summary or {}).get("count_label", "전체 탐지 수")
+    breakdown_label = (summary or {}).get("breakdown_label", "객체별 탐지 수")
     ship = str(counts.get("ship", 0))
     drone = str(counts.get("drone", 0))
     person = str(counts.get("person", 0))
@@ -2158,7 +2267,7 @@ def render_dashboard_tab1(summary: dict | None = None, mode: str = "demo"):
         <div class="dashboard-panel-title">통합 객체 탐지 현황</div>
         <div class="metric-grid-2">
             <div class="metric-card">
-                <div class="metric-label">전체 탐지 수</div>
+                <div class="metric-label">{count_label}</div>
                 <div class="metric-value cyan">{total}</div>
             </div>
             <div class="metric-card">
@@ -2167,7 +2276,7 @@ def render_dashboard_tab1(summary: dict | None = None, mode: str = "demo"):
             </div>
         </div>
         <hr class="compact-divider">
-        <div class="object-label">객체별 탐지 수 (Object Detection)</div>
+        <div class="object-label">{breakdown_label} (Object Detection)</div>
         <div class="object-tags">
             <div class="object-tag">함정 <strong>{ship}</strong></div>
             <div class="object-tag">드론 <strong>{drone}</strong></div>
@@ -2333,7 +2442,12 @@ with tab1:
             if view_mode == "Visual":
                 with st.container(border=True, key="ship_result_box"):
                     if result["is_video"]:
-                        st.video(result["video_bytes"], format="video/mp4")
+                        st.video(
+                            result["video_bytes"],
+                            format="video/mp4",
+                            autoplay=True,
+                            muted=True,
+                        )
                         st.caption("아래 대표 탐지 프레임의 바운딩 박스를 클릭해 분류할 영역을 선택하세요.")
                         selected_box = render_clickable_detections(result["image"], result["predictions"])
                     else:

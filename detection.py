@@ -84,6 +84,7 @@ class ShipPrediction:
     fine_class: str
     classification_confidence: float
     crop_base64: str | None = None
+    track_id: int | None = None
 
     @property
     def x2(self) -> int:
@@ -99,7 +100,7 @@ class ShipPrediction:
             return self.object_class
         if self.fine_class in {"ship", "선박", "함정"}:
             return "함정"
-        return self.fine_class.replace(",", "").replace("톤급", "")
+        return self.fine_class.replace(",", "")
 
 
 @dataclass
@@ -635,35 +636,60 @@ def run_pipeline(image: Image.Image, task: str = "detection") -> PipelineResult:
 
 @lru_cache(maxsize=8)
 def _get_label_font(font_size: int):
-    try:
-        return ImageFont.truetype("C:/Windows/Fonts/malgunbd.ttf", font_size)
-    except OSError:
+    font_candidates = (
+        "C:/Windows/Fonts/malgunbd.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
+        "NotoSansCJK-Bold.ttc",
+        "DejaVuSans-Bold.ttf",
+        "arialbd.ttf",
+    )
+    for font_path in font_candidates:
         try:
-            return ImageFont.truetype("arialbd.ttf", font_size)
+            return ImageFont.truetype(font_path, font_size)
         except OSError:
-            return ImageFont.load_default()
+            continue
+    return ImageFont.load_default(size=font_size)
 
 
 def draw_predictions(image: Image.Image, predictions: list[ShipPrediction]) -> Image.Image:
     output = image.copy()
     draw = ImageDraw.Draw(output)
-    font_size = max(16, int(min(image.size) * 0.026))
+    shortest_side = min(image.size)
+    font_size = max(18, min(40, int(shortest_side * 0.035)))
+    line_width = max(3, min(8, int(shortest_side * 0.006)))
     label_font = _get_label_font(font_size)
 
     for pred in predictions:
         color = SIZE_COLORS.get(pred.size_class, "#FF69B4")
         box = (pred.x, pred.y, pred.x2, pred.y2)
-        draw.rectangle(box, outline=color, width=6)
+        draw.rectangle(box, outline=color, width=line_width)
 
         label = pred.label
+        if pred.track_id is not None:
+            label = f"{label} · ID {pred.track_id:02d}"
         text_bbox = draw.textbbox((0, 0), label, font=label_font)
         text_w = text_bbox[2] - text_bbox[0]
         text_h = text_bbox[3] - text_bbox[1]
-        pad = 4
+        pad = max(6, int(font_size * 0.3))
         label_y = max(pred.y - text_h - pad * 2, 0)
-        label_box = (pred.x, label_y, pred.x + text_w + pad * 2, label_y + text_h + pad * 2)
+        label_x = max(0, min(pred.x, image.width - text_w - pad * 2))
+        label_box = (
+            label_x,
+            label_y,
+            label_x + text_w + pad * 2,
+            label_y + text_h + pad * 2,
+        )
         draw.rectangle(label_box, fill=color)
-        draw.text((label_box[0] + pad, label_box[1] + pad - 1), label, fill="white", font=label_font)
+        draw.text(
+            (label_box[0] + pad, label_box[1] + pad - 1),
+            label,
+            fill="white",
+            font=label_font,
+            stroke_width=1,
+            stroke_fill="#14202d",
+        )
 
     return output
 
@@ -701,6 +727,7 @@ def pipeline_to_json(
     for pred in pipeline_result.predictions:
         items.append(
             {
+                "track_id": pred.track_id,
                 "bbox": {
                     "x": pred.x,
                     "y": pred.y,
