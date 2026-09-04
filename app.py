@@ -44,7 +44,7 @@ if os.getenv("MARINE_DEV_RELOAD", "").strip() == "1":
     importlib.reload(_video_processing)
 
 from classification import classify_ship, get_classification_status
-from config import MAX_UPLOAD_MB, MAX_VIDEO_SECONDS
+from config import FINE_CLASSES, MAX_UPLOAD_MB, MAX_VIDEO_SECONDS
 from evaluation import (
     calculate_classification_metrics,
     calculate_tracking_metrics,
@@ -52,6 +52,16 @@ from evaluation import (
 )
 from roboflow_metrics import get_detection_metrics, get_display_metrics
 from video_processing import process_video_bytes
+
+
+TONNAGE_CLASS_OPTIONS = tuple(
+    sorted(
+        (label for labels in FINE_CLASSES.values() for label in labels),
+        key=lambda label: int(label.removesuffix("톤급").replace(",", "")),
+    )
+)
+CLASSIFICATION_EDITOR_FIELDS = ("sample_id", "true_label", "predicted_label")
+TRACKING_EDITOR_FIELDS = ("video_id", "true_count", "predicted_count", "id_switches")
 
 
 clickable_detection_image = components_v2.component(
@@ -1888,8 +1898,8 @@ body,
     letter-spacing: .04em;
 }
 
-.st-key-classification_eval_csv [data-testid="stFileUploader"],
-.st-key-tracking_eval_csv [data-testid="stFileUploader"] {
+.st-key-classification_eval_editor_import [data-testid="stFileUploader"],
+.st-key-tracking_eval_editor_import [data-testid="stFileUploader"] {
     height: auto !important;
     min-height: 0 !important;
     margin-top: 10px !important;
@@ -1897,8 +1907,15 @@ body,
     overflow: visible !important;
 }
 
-.st-key-classification_eval_csv [data-testid="stFileUploader"] section,
-.st-key-tracking_eval_csv [data-testid="stFileUploader"] section {
+.st-key-classification_eval_editor_import [data-testid="stFileUploader"] > label,
+.st-key-tracking_eval_editor_import [data-testid="stFileUploader"] > label {
+    color: #aab8c6 !important;
+    font-size: .82rem !important;
+    font-weight: 600 !important;
+}
+
+.st-key-classification_eval_editor_import [data-testid="stFileUploader"] section,
+.st-key-tracking_eval_editor_import [data-testid="stFileUploader"] section {
     height: 126px !important;
     min-height: 126px !important;
     padding: 0 !important;
@@ -1906,9 +1923,9 @@ body,
     border-color: #3a526a !important;
 }
 
-.st-key-classification_eval_csv [data-testid="stFileUploader"] section::before,
-.st-key-tracking_eval_csv [data-testid="stFileUploader"] section::before {
-    content: 'CSV FILE';
+.st-key-classification_eval_editor_import [data-testid="stFileUploader"] section::before,
+.st-key-tracking_eval_editor_import [data-testid="stFileUploader"] section::before {
+    content: 'OPTIONAL CSV IMPORT';
     top: 35px;
     bottom: auto;
     color: #8ba4ba;
@@ -1917,8 +1934,50 @@ body,
     transform: translateX(-50%);
 }
 
-.st-key-classification_eval_csv [data-testid="stFileUploader"] section::after,
-.st-key-tracking_eval_csv [data-testid="stFileUploader"] section::after {
+.quant-editor-heading {
+    margin: 18px 0 8px;
+    padding-left: 12px;
+    border-left: 2px solid #789ab8;
+}
+
+.quant-editor-title {
+    color: #e5ebf0;
+    font-size: .92rem;
+    font-weight: 650;
+}
+
+.quant-editor-desc {
+    margin-top: 4px;
+    color: #7f90a2;
+    font-size: .78rem;
+    line-height: 1.55;
+}
+
+[class*="st-key-classification_eval_editor_"] [data-testid="stDataFrame"],
+[class*="st-key-tracking_eval_editor_"] [data-testid="stDataFrame"] {
+    border: 1px solid #30445b !important;
+    border-radius: 0 !important;
+}
+
+.quant-editor-status {
+    min-height: 38px;
+    display: flex;
+    align-items: center;
+    padding: 8px 12px;
+    background: #0a1623;
+    border: 1px solid #293d52;
+    color: #90a2b4;
+    font-size: .78rem;
+}
+
+.quant-editor-status strong {
+    margin: 0 4px;
+    color: #e2eaf0;
+    font-size: .9rem;
+}
+
+.st-key-classification_eval_editor_import [data-testid="stFileUploader"] section::after,
+.st-key-tracking_eval_editor_import [data-testid="stFileUploader"] section::after {
     content: '클릭하여 파일 선택 · CSV / UTF-8';
     top: 76px;
     bottom: auto;
@@ -2240,6 +2299,248 @@ def build_summary_csv(filename: str, summary: dict, mode: str) -> bytes:
             if name != "track_id":
                 writer.writerow([f"track_{track_id}", name, value])
     return buffer.getvalue().encode("utf-8-sig")
+
+
+def build_evaluation_csv(rows: list[dict], fieldnames: tuple[str, ...]) -> bytes:
+    buffer = io.StringIO(newline="")
+    writer = csv.DictWriter(buffer, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    for row in rows:
+        writer.writerow(
+            {
+                field: "" if row.get(field) is None else row.get(field)
+                for field in fieldnames
+            }
+        )
+    return buffer.getvalue().encode("utf-8-sig")
+
+
+def _blank_editor_rows(fieldnames: tuple[str, ...], count: int = 5) -> list[dict]:
+    return [{field: None for field in fieldnames} for _ in range(count)]
+
+
+def get_evaluation_editor_seed(
+    prefix: str,
+    fieldnames: tuple[str, ...],
+) -> tuple[list[dict], int]:
+    seed_key = f"{prefix}_editor_seed"
+    version_key = f"{prefix}_editor_version"
+    if seed_key not in st.session_state:
+        st.session_state[seed_key] = _blank_editor_rows(fieldnames)
+    if version_key not in st.session_state:
+        st.session_state[version_key] = 0
+    return st.session_state[seed_key], int(st.session_state[version_key])
+
+
+def reset_evaluation_editor(prefix: str, fieldnames: tuple[str, ...]) -> None:
+    st.session_state[f"{prefix}_editor_seed"] = _blank_editor_rows(fieldnames)
+    st.session_state[f"{prefix}_editor_version"] = (
+        int(st.session_state.get(f"{prefix}_editor_version", 0)) + 1
+    )
+    st.session_state.pop(f"{prefix}_editor_import", None)
+    st.session_state.pop(f"{prefix}_editor_import_hash", None)
+
+
+def _parse_optional_nonnegative_integer(value, field_label: str) -> int | None:
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_label}에는 0 이상의 정수를 입력해야 합니다.") from exc
+    if not number.is_integer() or number < 0:
+        raise ValueError(f"{field_label}에는 0 이상의 정수를 입력해야 합니다.")
+    return int(number)
+
+
+def _normalize_classification_import_row(row: dict, row_number: int) -> dict:
+    normalized = {
+        "sample_id": str(row.get("sample_id", "") or "").strip(),
+        "true_label": str(row.get("true_label", "") or "").strip() or None,
+        "predicted_label": str(row.get("predicted_label", "") or "").strip() or None,
+    }
+    for field in ("true_label", "predicted_label"):
+        label = normalized[field]
+        if label is not None and label not in TONNAGE_CLASS_OPTIONS:
+            raise ValueError(
+                f"{row_number}행의 {field} 값 '{label}'은 프로젝트 톤급 클래스가 아닙니다."
+            )
+    return normalized
+
+
+def _normalize_tracking_import_row(row: dict, row_number: int) -> dict:
+    return {
+        "video_id": str(row.get("video_id", "") or "").strip(),
+        "true_count": _parse_optional_nonnegative_integer(
+            row.get("true_count"), f"{row_number}행 실제 객체 수"
+        ),
+        "predicted_count": _parse_optional_nonnegative_integer(
+            row.get("predicted_count"), f"{row_number}행 추적 결과 수"
+        ),
+        "id_switches": _parse_optional_nonnegative_integer(
+            row.get("id_switches"), f"{row_number}행 ID 변경 횟수"
+        ),
+    }
+
+
+def import_evaluation_csv(
+    prefix: str,
+    uploaded_file,
+    fieldnames: tuple[str, ...],
+    required_fields: set[str],
+    row_normalizer,
+) -> int | None:
+    if uploaded_file is None:
+        return None
+    content = uploaded_file.getvalue()
+    content_hash = hashlib.sha256(content).hexdigest()
+    hash_key = f"{prefix}_editor_import_hash"
+    if st.session_state.get(hash_key) == content_hash:
+        return None
+
+    reader = csv.DictReader(io.StringIO(content.decode("utf-8-sig")))
+    available_fields = set(reader.fieldnames or [])
+    missing_fields = required_fields - available_fields
+    if missing_fields:
+        missing_text = ", ".join(sorted(missing_fields))
+        raise ValueError(f"CSV에 필수 열이 없습니다: {missing_text}")
+
+    imported_rows = [
+        row_normalizer(row, row_number)
+        for row_number, row in enumerate(reader, start=2)
+    ]
+    st.session_state[f"{prefix}_editor_seed"] = (
+        imported_rows or _blank_editor_rows(fieldnames)
+    )
+    st.session_state[f"{prefix}_editor_version"] = (
+        int(st.session_state.get(f"{prefix}_editor_version", 0)) + 1
+    )
+    st.session_state[hash_key] = content_hash
+    return len(imported_rows)
+
+
+def collect_classification_editor_rows(rows: list[dict]) -> tuple[list[dict], int]:
+    complete_rows = []
+    incomplete_rows = 0
+    for row in rows:
+        sample_id = str(row.get("sample_id", "") or "").strip()
+        true_label = str(row.get("true_label", "") or "").strip()
+        predicted_label = str(row.get("predicted_label", "") or "").strip()
+        if not sample_id and not true_label and not predicted_label:
+            continue
+        if not true_label or not predicted_label:
+            incomplete_rows += 1
+            continue
+        complete_rows.append(
+            {
+                "sample_id": sample_id,
+                "true_label": true_label,
+                "predicted_label": predicted_label,
+            }
+        )
+    return complete_rows, incomplete_rows
+
+
+def collect_tracking_editor_rows(rows: list[dict]) -> tuple[list[dict], int]:
+    complete_rows = []
+    incomplete_rows = 0
+    for row_number, row in enumerate(rows, start=1):
+        video_id = str(row.get("video_id", "") or "").strip()
+        true_count = _parse_optional_nonnegative_integer(
+            row.get("true_count"), f"{row_number}행 실제 객체 수"
+        )
+        predicted_count = _parse_optional_nonnegative_integer(
+            row.get("predicted_count"), f"{row_number}행 추적 결과 수"
+        )
+        id_switches = _parse_optional_nonnegative_integer(
+            row.get("id_switches"), f"{row_number}행 ID 변경 횟수"
+        )
+        if (
+            not video_id
+            and true_count is None
+            and predicted_count is None
+            and id_switches is None
+        ):
+            continue
+        if true_count is None or predicted_count is None:
+            incomplete_rows += 1
+            continue
+        complete_rows.append(
+            {
+                "video_id": video_id,
+                "true_count": true_count,
+                "predicted_count": predicted_count,
+                "id_switches": id_switches or 0,
+            }
+        )
+    return complete_rows, incomplete_rows
+
+
+def render_classification_evaluation(rows: list[dict]) -> None:
+    classification_evaluation = calculate_classification_metrics(rows)
+    st.markdown(
+        '<div class="quant-eval-result-title">분류 평가 결과</div>',
+        unsafe_allow_html=True,
+    )
+    class_metric_columns = st.columns(3)
+    class_metric_columns[0].metric(
+        "Accuracy",
+        f"{classification_evaluation['accuracy']:.4f}",
+    )
+    class_metric_columns[1].metric(
+        "Macro F1",
+        f"{classification_evaluation['macro_f1']:.4f}",
+    )
+    class_metric_columns[2].metric(
+        "평가 샘플",
+        f"{classification_evaluation['samples']}개",
+    )
+    label_order = {label: index for index, label in enumerate(TONNAGE_CLASS_OPTIONS)}
+    labels = sorted(
+        classification_evaluation["labels"],
+        key=lambda label: (label_order.get(label, len(label_order)), label),
+    )
+    confusion_rows = []
+    for true_label in labels:
+        row = {"실제 클래스": true_label}
+        row.update(
+            {
+                predicted_label: classification_evaluation["confusion_matrix"][
+                    true_label
+                ][predicted_label]
+                for predicted_label in labels
+            }
+        )
+        confusion_rows.append(row)
+    st.caption("혼동행렬 · 행은 실제 클래스, 열은 예측 클래스입니다.")
+    st.dataframe(
+        confusion_rows,
+        width="stretch",
+        hide_index=True,
+        column_order=["실제 클래스", *labels],
+    )
+
+
+def render_tracking_evaluation(rows: list[dict]) -> None:
+    tracking_evaluation = calculate_tracking_metrics(rows)
+    st.markdown(
+        '<div class="quant-eval-result-title">추적 평가 결과</div>',
+        unsafe_allow_html=True,
+    )
+    track_metric_columns = st.columns(3)
+    track_metric_columns[0].metric(
+        "Count MAE",
+        f"{tracking_evaluation['count_mae']:.3f}",
+    )
+    track_metric_columns[1].metric(
+        "정확 집계율",
+        f"{tracking_evaluation['exact_count_rate'] * 100:.1f}%",
+    )
+    track_metric_columns[2].metric(
+        "ID 변경 횟수",
+        tracking_evaluation["total_id_switches"],
+    )
+    st.caption(f"평가에 사용된 영상 {tracking_evaluation['videos']}개")
 
 
 def render_dashboard_tab1(summary: dict | None = None, mode: str = "demo"):
@@ -2696,9 +2997,10 @@ with tab_quantitative:
         st.markdown("""
         <div class="quant-eval-guide">
             <div class="quant-eval-guide-item">
-                <span class="quant-eval-guide-label">CSV 필수 열</span>
+                <span class="quant-eval-guide-label">표 입력 항목</span>
                 <div class="quant-eval-guide-value">
-                    <code>true_label</code> 실제 톤급 · <code>predicted_label</code> 예측 톤급
+                    샘플 ID(선택) · <code>true_label</code> 실제 톤급 ·
+                    <code>predicted_label</code> 예측 톤급
                 </div>
             </div>
             <div class="quant-eval-guide-item">
@@ -2707,61 +3009,118 @@ with tab_quantitative:
             </div>
         </div>
         """, unsafe_allow_html=True)
-        st.download_button(
-            "빈 분류 CSV 양식 받기",
-            data=b"\xef\xbb\xbftrue_label,predicted_label\n",
-            file_name="classification_evaluation_template.csv",
-            mime="text/csv",
-            key="classification_eval_template",
-        )
         classification_eval_file = st.file_uploader(
-            "평가할 톤급 분류 CSV",
+            "기존 분류 CSV 불러오기 (선택)",
             type=["csv"],
-            key="classification_eval_csv",
-            help="한 행에는 한 이미지의 실제 톤급과 모델이 예측한 톤급을 입력합니다.",
+            key="classification_eval_editor_import",
+            help="기존 CSV를 표로 불러와 수정할 수 있습니다. 새로 작성하려면 건너뛰세요.",
         )
-        if classification_eval_file is not None:
-            try:
-                classification_evaluation = calculate_classification_metrics(
-                    read_csv_rows(classification_eval_file.getvalue())
-                )
-                st.markdown(
-                    '<div class="quant-eval-result-title">분류 평가 결과</div>',
-                    unsafe_allow_html=True,
-                )
-                class_metric_columns = st.columns(3)
-                class_metric_columns[0].metric(
-                    "Accuracy",
-                    f"{classification_evaluation['accuracy']:.4f}",
-                )
-                class_metric_columns[1].metric(
-                    "Macro F1",
-                    f"{classification_evaluation['macro_f1']:.4f}",
-                )
-                class_metric_columns[2].metric(
-                    "평가 샘플",
-                    f"{classification_evaluation['samples']}개",
-                )
-                confusion_rows = []
-                for true_label in classification_evaluation["labels"]:
-                    row = {"실제 클래스": true_label}
-                    row.update(classification_evaluation["confusion_matrix"][true_label])
-                    confusion_rows.append(row)
-                st.caption("혼동행렬 · 행은 실제 클래스, 열은 예측 클래스입니다.")
-                st.dataframe(
-                    confusion_rows,
-                    use_container_width=True,
-                    hide_index=True,
-                )
-            except Exception as exc:
-                st.error(f"분류 평가 CSV 오류: {exc}")
+        try:
+            imported_count = import_evaluation_csv(
+                "classification_eval",
+                classification_eval_file,
+                CLASSIFICATION_EDITOR_FIELDS,
+                {"true_label", "predicted_label"},
+                _normalize_classification_import_row,
+            )
+            if imported_count is not None:
+                if imported_count:
+                    st.success(f"CSV {imported_count}개 행을 편집표로 불러왔습니다.")
+                else:
+                    st.success("CSV 열을 확인했습니다. 빈 편집표를 준비했습니다.")
+        except Exception as exc:
+            st.error(f"분류 CSV 불러오기 오류: {exc}")
+
+        st.markdown("""
+        <div class="quant-editor-heading">
+            <div class="quant-editor-title">분류 평가 데이터 편집</div>
+            <div class="quant-editor-desc">
+                셀을 선택해 직접 입력하세요. 표 아래의 + 버튼으로 행을 추가하고,
+                행 왼쪽 메뉴에서 삭제할 수 있습니다.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        classification_seed, classification_editor_version = get_evaluation_editor_seed(
+            "classification_eval",
+            CLASSIFICATION_EDITOR_FIELDS,
+        )
+        classification_editor_rows = st.data_editor(
+            classification_seed,
+            width="stretch",
+            height=280,
+            hide_index=True,
+            num_rows="dynamic",
+            key=f"classification_eval_editor_{classification_editor_version}",
+            column_order=CLASSIFICATION_EDITOR_FIELDS,
+            column_config={
+                "sample_id": st.column_config.TextColumn(
+                    "샘플 ID",
+                    width="medium",
+                    help="이미지 파일명이나 관리 번호를 입력합니다. 평가 계산에는 사용하지 않습니다.",
+                ),
+                "true_label": st.column_config.SelectboxColumn(
+                    "실제 톤급",
+                    options=TONNAGE_CLASS_OPTIONS,
+                    required=True,
+                    width="medium",
+                    help="정답으로 확인한 함정 톤급입니다.",
+                ),
+                "predicted_label": st.column_config.SelectboxColumn(
+                    "예측 톤급",
+                    options=TONNAGE_CLASS_OPTIONS,
+                    required=True,
+                    width="medium",
+                    help="ViT 모델이 예측한 함정 톤급입니다.",
+                ),
+            },
+        )
+        classification_rows, incomplete_classification_rows = (
+            collect_classification_editor_rows(classification_editor_rows)
+        )
+        class_status_col, class_download_col, class_reset_col = st.columns(
+            [2.2, 1, 0.8], gap="small"
+        )
+        with class_status_col:
+            st.markdown(
+                f'<div class="quant-editor-status">평가 가능 <strong>{len(classification_rows)}</strong>건'
+                f' · 미완성 <strong>{incomplete_classification_rows}</strong>건</div>',
+                unsafe_allow_html=True,
+            )
+        with class_download_col:
+            st.download_button(
+                "작성 CSV 다운로드",
+                data=build_evaluation_csv(
+                    classification_rows,
+                    CLASSIFICATION_EDITOR_FIELDS,
+                ),
+                file_name="classification_evaluation.csv",
+                mime="text/csv",
+                disabled=not classification_rows,
+                use_container_width=True,
+                key="classification_eval_download",
+            )
+        with class_reset_col:
+            st.button(
+                "표 비우기",
+                use_container_width=True,
+                key="classification_eval_reset",
+                on_click=reset_evaluation_editor,
+                args=("classification_eval", CLASSIFICATION_EDITOR_FIELDS),
+            )
+        if incomplete_classification_rows:
+            st.warning("실제 톤급과 예측 톤급이 모두 입력되지 않은 행은 평가에서 제외됩니다.")
+        if classification_rows:
+            render_classification_evaluation(classification_rows)
+        else:
+            st.info("실제 톤급과 예측 톤급을 한 행 이상 입력하면 평가 결과가 자동 계산됩니다.")
     else:
         st.markdown("""
         <div class="quant-eval-guide">
             <div class="quant-eval-guide-item">
-                <span class="quant-eval-guide-label">CSV 열 구성</span>
+                <span class="quant-eval-guide-label">표 입력 항목</span>
                 <div class="quant-eval-guide-value">
-                    <code>true_count</code> 실제 객체 수 · <code>predicted_count</code> 추적 결과 수 ·
+                    영상 ID(선택) · <code>true_count</code> 실제 객체 수 ·
+                    <code>predicted_count</code> 추적 결과 수 ·
                     <code>id_switches</code> ID 변경 횟수(선택)
                 </div>
             </div>
@@ -2771,44 +3130,125 @@ with tab_quantitative:
             </div>
         </div>
         """, unsafe_allow_html=True)
-        st.download_button(
-            "빈 추적 CSV 양식 받기",
-            data=b"\xef\xbb\xbfvideo_id,true_count,predicted_count,id_switches\n",
-            file_name="tracking_evaluation_template.csv",
-            mime="text/csv",
-            key="tracking_eval_template",
-        )
         tracking_eval_file = st.file_uploader(
-            "평가할 영상 추적 CSV",
+            "기존 추적 CSV 불러오기 (선택)",
             type=["csv"],
-            key="tracking_eval_csv",
-            help="한 행에는 한 영상의 실제 객체 수와 추적 결과 수를 입력합니다.",
+            key="tracking_eval_editor_import",
+            help="기존 CSV를 표로 불러와 수정할 수 있습니다. 새로 작성하려면 건너뛰세요.",
         )
-        if tracking_eval_file is not None:
-            try:
-                tracking_evaluation = calculate_tracking_metrics(
-                    read_csv_rows(tracking_eval_file.getvalue())
-                )
-                st.markdown(
-                    '<div class="quant-eval-result-title">추적 평가 결과</div>',
-                    unsafe_allow_html=True,
-                )
-                track_metric_columns = st.columns(3)
-                track_metric_columns[0].metric(
-                    "Count MAE",
-                    f"{tracking_evaluation['count_mae']:.3f}",
-                )
-                track_metric_columns[1].metric(
-                    "정확 집계율",
-                    f"{tracking_evaluation['exact_count_rate'] * 100:.1f}%",
-                )
-                track_metric_columns[2].metric(
+        try:
+            imported_count = import_evaluation_csv(
+                "tracking_eval",
+                tracking_eval_file,
+                TRACKING_EDITOR_FIELDS,
+                {"true_count", "predicted_count"},
+                _normalize_tracking_import_row,
+            )
+            if imported_count is not None:
+                if imported_count:
+                    st.success(f"CSV {imported_count}개 행을 편집표로 불러왔습니다.")
+                else:
+                    st.success("CSV 열을 확인했습니다. 빈 편집표를 준비했습니다.")
+        except Exception as exc:
+            st.error(f"추적 CSV 불러오기 오류: {exc}")
+
+        st.markdown("""
+        <div class="quant-editor-heading">
+            <div class="quant-editor-title">영상 추적 평가 데이터 편집</div>
+            <div class="quant-editor-desc">
+                영상별 정답 객체 수와 추적 결과 수를 입력하세요.
+                ID가 바뀐 횟수를 모르면 비워 두어도 됩니다.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        tracking_seed, tracking_editor_version = get_evaluation_editor_seed(
+            "tracking_eval",
+            TRACKING_EDITOR_FIELDS,
+        )
+        tracking_editor_rows = st.data_editor(
+            tracking_seed,
+            width="stretch",
+            height=280,
+            hide_index=True,
+            num_rows="dynamic",
+            key=f"tracking_eval_editor_{tracking_editor_version}",
+            column_order=TRACKING_EDITOR_FIELDS,
+            column_config={
+                "video_id": st.column_config.TextColumn(
+                    "영상 ID",
+                    width="medium",
+                    help="영상 파일명이나 관리 번호입니다. 평가 계산에는 사용하지 않습니다.",
+                ),
+                "true_count": st.column_config.NumberColumn(
+                    "실제 객체 수",
+                    min_value=0,
+                    step=1,
+                    required=True,
+                    format="%d",
+                    help="영상에 실제로 등장한 고유 객체 수입니다.",
+                ),
+                "predicted_count": st.column_config.NumberColumn(
+                    "추적 결과 수",
+                    min_value=0,
+                    step=1,
+                    required=True,
+                    format="%d",
+                    help="시스템이 고유 ID로 집계한 객체 수입니다.",
+                ),
+                "id_switches": st.column_config.NumberColumn(
                     "ID 변경 횟수",
-                    tracking_evaluation["total_id_switches"],
-                )
-                st.caption(f"평가에 사용된 영상 {tracking_evaluation['videos']}개")
-            except Exception as exc:
-                st.error(f"추적 평가 CSV 오류: {exc}")
+                    min_value=0,
+                    step=1,
+                    format="%d",
+                    help="같은 객체의 추적 ID가 바뀐 횟수입니다. 미입력 시 0으로 계산합니다.",
+                ),
+            },
+        )
+        try:
+            tracking_rows, incomplete_tracking_rows = collect_tracking_editor_rows(
+                tracking_editor_rows
+            )
+            tracking_input_error = None
+        except ValueError as exc:
+            tracking_rows = []
+            incomplete_tracking_rows = 0
+            tracking_input_error = str(exc)
+
+        track_status_col, track_download_col, track_reset_col = st.columns(
+            [2.2, 1, 0.8], gap="small"
+        )
+        with track_status_col:
+            st.markdown(
+                f'<div class="quant-editor-status">평가 가능 <strong>{len(tracking_rows)}</strong>건'
+                f' · 미완성 <strong>{incomplete_tracking_rows}</strong>건</div>',
+                unsafe_allow_html=True,
+            )
+        with track_download_col:
+            st.download_button(
+                "작성 CSV 다운로드",
+                data=build_evaluation_csv(tracking_rows, TRACKING_EDITOR_FIELDS),
+                file_name="tracking_evaluation.csv",
+                mime="text/csv",
+                disabled=not tracking_rows,
+                use_container_width=True,
+                key="tracking_eval_download",
+            )
+        with track_reset_col:
+            st.button(
+                "표 비우기",
+                use_container_width=True,
+                key="tracking_eval_reset",
+                on_click=reset_evaluation_editor,
+                args=("tracking_eval", TRACKING_EDITOR_FIELDS),
+            )
+        if tracking_input_error:
+            st.error(tracking_input_error)
+        elif incomplete_tracking_rows:
+            st.warning("실제 객체 수와 추적 결과 수가 모두 입력되지 않은 행은 평가에서 제외됩니다.")
+        if tracking_rows:
+            render_tracking_evaluation(tracking_rows)
+        elif not tracking_input_error:
+            st.info("실제 객체 수와 추적 결과 수를 한 행 이상 입력하면 평가 결과가 자동 계산됩니다.")
 
 
 # ============================================================

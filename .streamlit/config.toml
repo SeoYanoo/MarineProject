@@ -3,3 +3,10 @@ maxUploadSize = 150
 
 [client]
 showErrorDetails = false
+
+[theme]
+base = "dark"
+primaryColor = "#789ab8"
+backgroundColor = "#07111d"
+secondaryBackgroundColor = "#0d1927"
+textColor = "#eef3f7"
