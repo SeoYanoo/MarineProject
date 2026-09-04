@@ -1916,6 +1916,76 @@ def _new_video_summary(image_width: int, image_height: int) -> dict:
     }
 
 
+def _bbox_center(box: tuple[float, float, float, float]) -> tuple[float, float]:
+    return box[0] + box[2] / 2, box[1] + box[3] / 2
+
+
+def _bbox_iou(
+    first: tuple[float, float, float, float],
+    second: tuple[float, float, float, float],
+) -> float:
+    intersection_width = max(
+        0.0,
+        min(first[0] + first[2], second[0] + second[2]) - max(first[0], second[0]),
+    )
+    intersection_height = max(
+        0.0,
+        min(first[1] + first[3], second[1] + second[3]) - max(first[1], second[1]),
+    )
+    intersection = intersection_width * intersection_height
+    union = first[2] * first[3] + second[2] * second[3] - intersection
+    return intersection / max(union, 1.0)
+
+
+def _box_size_similarity(
+    first: tuple[float, float, float, float],
+    second: tuple[float, float, float, float],
+) -> float:
+    first_area = max(first[2] * first[3], 1.0)
+    second_area = max(second[2] * second[3], 1.0)
+    return min(first_area, second_area) / max(first_area, second_area)
+
+
+def _track_motion_limit(
+    summary: dict,
+    track: dict,
+    pred_box: tuple[float, float, float, float],
+    gap: int,
+) -> float:
+    """객체 크기와 기존 속도를 함께 반영한 프레임 간 최대 이동 거리."""
+    object_class = track["object_class"]
+    class_diagonal_ratio = {
+        "drone": 0.12,
+        "person": 0.045,
+        "ship": 0.035,
+    }.get(object_class, 0.04)
+    size_multiplier = {
+        "drone": 8.0,
+        "person": 4.0,
+        "ship": 3.0,
+    }.get(object_class, 3.5)
+    last_box = track["last_bbox"]
+    object_extent = max(
+        pred_box[2],
+        pred_box[3],
+        last_box[2],
+        last_box[3],
+    )
+    base_limit = max(
+        summary["image_diagonal"] * class_diagonal_ratio,
+        object_extent * size_multiplier,
+    )
+    velocity_x, velocity_y = track["velocity"]
+    predicted_motion = math.hypot(velocity_x, velocity_y) * gap
+    # 빠르게 이동하는 작은 드론은 샘플링 간 위치 변화가 크게 보인다. 기존
+    # 속도가 잡힌 뒤에는 그 속도에 비례해 탐색 범위를 넓히되 상한을 둔다.
+    adaptive_limit = max(
+        base_limit * min(gap, 3),
+        predicted_motion * 1.75 + object_extent * 2.0,
+    )
+    return min(adaptive_limit, summary["image_diagonal"] * 0.28)
+
+
 def _accumulate_video_summary(summary: dict, predictions: list) -> None:
     """프레임 간 객체를 연결해 같은 객체가 한 번만 집계되도록 한다."""
     summary["step"] += 1
@@ -1940,37 +2010,41 @@ def _accumulate_video_summary(summary: dict, predictions: list) -> None:
                 continue
 
             track_box = track["last_bbox"]
-            track_center = (
-                track_box[0] + track_box[2] / 2,
-                track_box[1] + track_box[3] / 2,
+            gap = max(1, current_step - track["last_seen"])
+            track_center = track["last_center"]
+            velocity_x, velocity_y = track["velocity"]
+            predicted_center = (
+                track_center[0] + velocity_x * gap,
+                track_center[1] + velocity_y * gap,
             )
-            intersection_width = max(
-                0,
-                min(pred_box[0] + pred_box[2], track_box[0] + track_box[2])
-                - max(pred_box[0], track_box[0]),
+            predicted_distance = math.hypot(
+                pred_center[0] - predicted_center[0],
+                pred_center[1] - predicted_center[1],
             )
-            intersection_height = max(
-                0,
-                min(pred_box[1] + pred_box[3], track_box[1] + track_box[3])
-                - max(pred_box[1], track_box[1]),
-            )
-            intersection = intersection_width * intersection_height
-            union = (
-                pred_box[2] * pred_box[3]
-                + track_box[2] * track_box[3]
-                - intersection
-            )
-            iou = intersection / max(union, 1)
-            center_distance = math.hypot(
+            last_distance = math.hypot(
                 pred_center[0] - track_center[0],
                 pred_center[1] - track_center[1],
             )
-            motion_limit = max(
-                summary["image_diagonal"] * 0.035,
-                max(pred_box[2], pred_box[3], track_box[2], track_box[3]) * 3.0,
+            iou = _bbox_iou(pred_box, track_box)
+            size_similarity = _box_size_similarity(pred_box, track_box)
+            motion_limit = _track_motion_limit(summary, track, pred_box, gap)
+
+            # 첫 두 관측에서는 속도가 아직 안정적이지 않으므로 마지막 위치와
+            # 예측 위치 중 가까운 쪽을 사용한다. 이후에는 이동 예측을 우선한다.
+            association_distance = (
+                min(predicted_distance, last_distance)
+                if track["hits"] < 3
+                else predicted_distance
             )
-            if iou >= 0.05 or center_distance <= motion_limit:
-                score = iou * 2 + max(0.0, 1 - center_distance / motion_limit)
+            if iou >= 0.03 or association_distance <= motion_limit:
+                distance_score = max(0.0, 1 - association_distance / motion_limit)
+                age_penalty = max(0, gap - 1) * 0.08
+                score = (
+                    iou * 2.0
+                    + distance_score * 1.5
+                    + size_similarity * 0.35
+                    - age_penalty
+                )
                 candidates.append((score, prediction_index, track_id))
 
     matched_predictions = set()
@@ -1981,12 +2055,31 @@ def _accumulate_video_summary(summary: dict, predictions: list) -> None:
         prediction = predictions[prediction_index]
         track = tracks[track_id]
         prediction.track_id = track_id
-        track["last_bbox"] = (
+        new_box = (
             prediction.x,
             prediction.y,
             prediction.width,
             prediction.height,
         )
+        new_center = _bbox_center(new_box)
+        gap = max(1, current_step - track["last_seen"])
+        observed_velocity = (
+            (new_center[0] - track["last_center"][0]) / gap,
+            (new_center[1] - track["last_center"][1]) / gap,
+        )
+        if track["hits"] == 1:
+            track["velocity"] = observed_velocity
+        else:
+            # 최근 변화에 더 큰 가중치를 둬 급가속하는 드론도 빠르게 따라간다.
+            velocity_weight = 0.68 if prediction.object_class == "drone" else 0.55
+            track["velocity"] = (
+                track["velocity"][0] * (1 - velocity_weight)
+                + observed_velocity[0] * velocity_weight,
+                track["velocity"][1] * (1 - velocity_weight)
+                + observed_velocity[1] * velocity_weight,
+            )
+        track["last_bbox"] = new_box
+        track["last_center"] = new_center
         track["last_seen"] = current_step
         track["hits"] += 1
         track["best_confidence"] = max(
@@ -2004,14 +2097,20 @@ def _accumulate_video_summary(summary: dict, predictions: list) -> None:
         track_id = summary["next_track_id"]
         summary["next_track_id"] += 1
         prediction.track_id = track_id
+        new_box = (
+            prediction.x,
+            prediction.y,
+            prediction.width,
+            prediction.height,
+        )
+        new_center = _bbox_center(new_box)
         tracks[track_id] = {
             "object_class": prediction.object_class,
-            "last_bbox": (
-                prediction.x,
-                prediction.y,
-                prediction.width,
-                prediction.height,
-            ),
+            "first_seen": current_step,
+            "first_center": new_center,
+            "last_bbox": new_box,
+            "last_center": new_center,
+            "velocity": (0.0, 0.0),
             "last_seen": current_step,
             "hits": 1,
             "best_confidence": prediction.detection_confidence,
