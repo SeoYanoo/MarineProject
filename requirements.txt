@@ -1,9 +1,9 @@
 streamlit==1.63.0
-opencv-python-headless
-pillow
-numpy
-requests
-imageio-ffmpeg
+opencv-python-headless==5.0.0.93
+pillow==12.2.0
+numpy==2.4.6
+requests==2.34.2
+imageio-ffmpeg==0.6.0
 
 # YOLO / ViT 모델 연동 시 추가 설치
 # ultralytics

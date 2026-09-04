@@ -19,6 +19,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from config import (
+    ALLOW_DEMO_MODE,
     FINE_CLASSES,
     INFERENCE_JPEG_QUALITY,
     INFERENCE_MAX_DIMENSION,
@@ -573,7 +574,14 @@ def run_pipeline(image: Image.Image, task: str = "detection") -> PipelineResult:
             mode = "local-yolo"
             pipeline_steps = ["input", "local_yolo_detection", "visualization"]
         else:
-            # 기존 데모 동작 유지.
+            if not ALLOW_DEMO_MODE:
+                raise RuntimeError(
+                    "실제 객체 탐지 모델을 사용할 수 없습니다. "
+                    "Streamlit Secrets의 ROBOFLOW_API_KEY 또는 로컬 YOLO 모델을 확인해 주세요. "
+                    "가상 결과가 필요한 개발 환경에서만 ALLOW_DEMO_MODE=true를 설정할 수 있습니다."
+                )
+
+            # 명시적으로 허용된 개발 환경에서만 데모 결과를 사용한다.
             raw_boxes = [
                 (x, y, w, h, c)
                 for x, y, w, h, c in _demo_boxes(width, height)
@@ -767,6 +775,7 @@ def get_model_status() -> dict:
         "roboflow_configured": bool(os.getenv("ROBOFLOW_API_KEY", "").strip()),
         "roboflow_workspace": ROBOFLOW_WORKSPACE_NAME,
         "roboflow_workflow_id": ROBOFLOW_WORKFLOW_ID,
+        "demo_mode_allowed": ALLOW_DEMO_MODE,
         "yolo_loaded": YOLO_MODEL_PATH.exists() and _load_yolo() is not None,
         "vit_loaded": VIT_MODEL_PATH.exists() and _load_vit()[0] is not None,
         "yolo_path": str(YOLO_MODEL_PATH),

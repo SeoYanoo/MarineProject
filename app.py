@@ -1,38 +1,56 @@
 import base64
+import csv
+import html
+import importlib
 import io
-import math
 import os
-import tempfile
+import time
 
-import cv2
-import imageio_ffmpeg
-import numpy as np
 import streamlit as st
 import streamlit.components.v2 as components_v2
 from PIL import Image
 
-# Streamlit keeps imported modules cached between script reruns.  Reload the
-# local pipeline module so newly added helpers are available without having to
-# kill the development server first.
+# Streamlit keeps imported modules cached between script reruns. Configuration
+# must be refreshed before modules that import newly added settings.
+import config as _config
+
+_REQUIRED_CONFIG_NAMES = {
+    "ALLOW_DEMO_MODE",
+    "MAX_UPLOAD_MB",
+    "MAX_VIDEO_SECONDS",
+    "MAX_VIDEO_SOURCE_DIMENSION",
+}
+if not all(hasattr(_config, name) for name in _REQUIRED_CONFIG_NAMES):
+    _config = importlib.reload(_config)
+
 import detection as _detection
+if not hasattr(_detection, "ALLOW_DEMO_MODE"):
+    _detection = importlib.reload(_detection)
+
 import classification as _classification
+import evaluation as _evaluation
 import roboflow_metrics as _roboflow_metrics
+import tracking as _tracking
+import video_processing as _video_processing
 
 if os.getenv("MARINE_DEV_RELOAD", "").strip() == "1":
-    import importlib
-
+    importlib.reload(_config)
     importlib.reload(_detection)
     importlib.reload(_classification)
+    importlib.reload(_evaluation)
     importlib.reload(_roboflow_metrics)
+    importlib.reload(_tracking)
+    importlib.reload(_video_processing)
 
-from classification import classify_ship
-from config import (
-    VIDEO_INFERENCE_FPS,
-    VIDEO_MAX_DIMENSION,
-    VIDEO_MAX_INFERENCE_CALLS,
-    VIDEO_OUTPUT_FPS,
+from classification import classify_ship, get_classification_status
+from config import MAX_UPLOAD_MB, MAX_VIDEO_SECONDS
+from evaluation import (
+    calculate_classification_metrics,
+    calculate_tracking_metrics,
+    read_csv_rows,
 )
 from roboflow_metrics import get_detection_metrics, get_display_metrics
+from video_processing import process_video_bytes
 
 
 clickable_detection_image = components_v2.component(
@@ -40,7 +58,7 @@ clickable_detection_image = components_v2.component(
     html='<div class="clickable-image-root"></div>',
     css="""
     .clickable-image-root { position: relative; width: 100%; line-height: 0; }
-    .clickable-image-root img { width: 100%; height: auto; border-radius: 8px; display: block; }
+    .clickable-image-root img { width: 100%; height: auto; border-radius: 0; display: block; }
     .clickable-image-root button { position: absolute; z-index: 5; padding: 0; margin: 0;
         border: 0; background: transparent; cursor: pointer; box-sizing: border-box; }
     .clickable-image-root button:hover { background: rgba(126, 169, 205, .12); outline: 2px solid #8fb9dc; }
@@ -1682,11 +1700,12 @@ body,
 [data-testid="stFileUploader"] section,
 [data-testid="stFileUploader"] section button,
 .stButton button,
+.stDownloadButton button,
 [data-testid="stRadio"] label,
 .st-key-intrusion_environment [data-testid="stRadio"] label,
 .st-key-ship_result_box,
 .st-key-intrusion_result_box {
-    border-radius: 2px !important;
+    border-radius: 0 !important;
 }
 
 [data-testid="stImage"] img,
@@ -1718,7 +1737,7 @@ body,
 }
 
 .hero-header::after {
-    content: 'SURVEILLANCE GRID  ·  SECTOR 01';
+    content: '';
     position: absolute;
     right: 2px;
     bottom: -18px;
@@ -1726,6 +1745,21 @@ body,
     font-size: 9px;
     font-weight: 500;
     letter-spacing: .12em;
+}
+
+.stDownloadButton button {
+    min-height: 38px;
+    background: #101f30 !important;
+    border: 1px solid #30445b !important;
+    border-radius: 0 !important;
+    color: #dce7ee !important;
+    font-size: .78rem !important;
+    box-shadow: none !important;
+}
+
+.stDownloadButton button:hover {
+    background: #162a3e !important;
+    border-color: #6f91af !important;
 }
 
 .stTabs [aria-selected="true"] {
@@ -1839,12 +1873,14 @@ def render_media_card(filename: str, meta: str, thumbnail: Image.Image, uploader
     thumbnail.save(buffer, format="JPEG", quality=85)
     encoded = base64.b64encode(buffer.getvalue()).decode()
     with st.container(key=f"{uploader_key}_card"):
+        safe_filename = html.escape(str(filename))
+        safe_meta = html.escape(str(meta))
         st.markdown(f"""
         <div class="media-card">
             <img class="media-thumb" src="data:image/jpeg;base64,{encoded}" alt="thumbnail">
             <div>
-                <div class="media-name">{filename}</div>
-                <div class="media-meta">{meta}</div>
+                <div class="media-name">{safe_filename}</div>
+                <div class="media-meta">{safe_meta}</div>
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -1907,382 +1943,19 @@ def render_object_detection_stats(summary: dict, mode: str):
     """, unsafe_allow_html=True)
 
 
-def _new_video_summary(image_width: int, image_height: int) -> dict:
-    return {
-        "tracks": {},
-        "next_track_id": 1,
-        "step": 0,
-        "image_diagonal": math.hypot(image_width, image_height),
-    }
-
-
-def _bbox_center(box: tuple[float, float, float, float]) -> tuple[float, float]:
-    return box[0] + box[2] / 2, box[1] + box[3] / 2
-
-
-def _bbox_iou(
-    first: tuple[float, float, float, float],
-    second: tuple[float, float, float, float],
-) -> float:
-    intersection_width = max(
-        0.0,
-        min(first[0] + first[2], second[0] + second[2]) - max(first[0], second[0]),
-    )
-    intersection_height = max(
-        0.0,
-        min(first[1] + first[3], second[1] + second[3]) - max(first[1], second[1]),
-    )
-    intersection = intersection_width * intersection_height
-    union = first[2] * first[3] + second[2] * second[3] - intersection
-    return intersection / max(union, 1.0)
-
-
-def _box_size_similarity(
-    first: tuple[float, float, float, float],
-    second: tuple[float, float, float, float],
-) -> float:
-    first_area = max(first[2] * first[3], 1.0)
-    second_area = max(second[2] * second[3], 1.0)
-    return min(first_area, second_area) / max(first_area, second_area)
-
-
-def _track_motion_limit(
-    summary: dict,
-    track: dict,
-    pred_box: tuple[float, float, float, float],
-    gap: int,
-) -> float:
-    """객체 크기와 기존 속도를 함께 반영한 프레임 간 최대 이동 거리."""
-    object_class = track["object_class"]
-    class_diagonal_ratio = {
-        "drone": 0.12,
-        "person": 0.045,
-        "ship": 0.035,
-    }.get(object_class, 0.04)
-    size_multiplier = {
-        "drone": 8.0,
-        "person": 4.0,
-        "ship": 3.0,
-    }.get(object_class, 3.5)
-    last_box = track["last_bbox"]
-    object_extent = max(
-        pred_box[2],
-        pred_box[3],
-        last_box[2],
-        last_box[3],
-    )
-    base_limit = max(
-        summary["image_diagonal"] * class_diagonal_ratio,
-        object_extent * size_multiplier,
-    )
-    velocity_x, velocity_y = track["velocity"]
-    predicted_motion = math.hypot(velocity_x, velocity_y) * gap
-    # 빠르게 이동하는 작은 드론은 샘플링 간 위치 변화가 크게 보인다. 기존
-    # 속도가 잡힌 뒤에는 그 속도에 비례해 탐색 범위를 넓히되 상한을 둔다.
-    adaptive_limit = max(
-        base_limit * min(gap, 3),
-        predicted_motion * 1.75 + object_extent * 2.0,
-    )
-    return min(adaptive_limit, summary["image_diagonal"] * 0.28)
-
-
-def _accumulate_video_summary(summary: dict, predictions: list) -> None:
-    """프레임 간 객체를 연결해 같은 객체가 한 번만 집계되도록 한다."""
-    summary["step"] += 1
-    current_step = summary["step"]
-    tracks = summary["tracks"]
-    active_track_ids = [
-        track_id
-        for track_id, track in tracks.items()
-        if current_step - track["last_seen"] <= 8
-    ]
-
-    candidates = []
-    for prediction_index, prediction in enumerate(predictions):
-        pred_box = (prediction.x, prediction.y, prediction.width, prediction.height)
-        pred_center = (
-            prediction.x + prediction.width / 2,
-            prediction.y + prediction.height / 2,
-        )
-        for track_id in active_track_ids:
-            track = tracks[track_id]
-            if track["object_class"] != prediction.object_class:
-                continue
-
-            track_box = track["last_bbox"]
-            gap = max(1, current_step - track["last_seen"])
-            track_center = track["last_center"]
-            velocity_x, velocity_y = track["velocity"]
-            predicted_center = (
-                track_center[0] + velocity_x * gap,
-                track_center[1] + velocity_y * gap,
-            )
-            predicted_distance = math.hypot(
-                pred_center[0] - predicted_center[0],
-                pred_center[1] - predicted_center[1],
-            )
-            last_distance = math.hypot(
-                pred_center[0] - track_center[0],
-                pred_center[1] - track_center[1],
-            )
-            iou = _bbox_iou(pred_box, track_box)
-            size_similarity = _box_size_similarity(pred_box, track_box)
-            motion_limit = _track_motion_limit(summary, track, pred_box, gap)
-
-            # 첫 두 관측에서는 속도가 아직 안정적이지 않으므로 마지막 위치와
-            # 예측 위치 중 가까운 쪽을 사용한다. 이후에는 이동 예측을 우선한다.
-            association_distance = (
-                min(predicted_distance, last_distance)
-                if track["hits"] < 3
-                else predicted_distance
-            )
-            if iou >= 0.03 or association_distance <= motion_limit:
-                distance_score = max(0.0, 1 - association_distance / motion_limit)
-                age_penalty = max(0, gap - 1) * 0.08
-                score = (
-                    iou * 2.0
-                    + distance_score * 1.5
-                    + size_similarity * 0.35
-                    - age_penalty
-                )
-                candidates.append((score, prediction_index, track_id))
-
-    matched_predictions = set()
-    matched_tracks = set()
-    for _, prediction_index, track_id in sorted(candidates, reverse=True):
-        if prediction_index in matched_predictions or track_id in matched_tracks:
-            continue
-        prediction = predictions[prediction_index]
-        track = tracks[track_id]
-        prediction.track_id = track_id
-        new_box = (
-            prediction.x,
-            prediction.y,
-            prediction.width,
-            prediction.height,
-        )
-        new_center = _bbox_center(new_box)
-        gap = max(1, current_step - track["last_seen"])
-        observed_velocity = (
-            (new_center[0] - track["last_center"][0]) / gap,
-            (new_center[1] - track["last_center"][1]) / gap,
-        )
-        if track["hits"] == 1:
-            track["velocity"] = observed_velocity
-        else:
-            # 최근 변화에 더 큰 가중치를 둬 급가속하는 드론도 빠르게 따라간다.
-            velocity_weight = 0.68 if prediction.object_class == "drone" else 0.55
-            track["velocity"] = (
-                track["velocity"][0] * (1 - velocity_weight)
-                + observed_velocity[0] * velocity_weight,
-                track["velocity"][1] * (1 - velocity_weight)
-                + observed_velocity[1] * velocity_weight,
-            )
-        track["last_bbox"] = new_box
-        track["last_center"] = new_center
-        track["last_seen"] = current_step
-        track["hits"] += 1
-        track["best_confidence"] = max(
-            track["best_confidence"],
-            prediction.detection_confidence,
-        )
-        size_votes = track["size_votes"]
-        size_votes[prediction.size_class] = size_votes.get(prediction.size_class, 0) + 1
-        matched_predictions.add(prediction_index)
-        matched_tracks.add(track_id)
-
-    for prediction_index, prediction in enumerate(predictions):
-        if prediction_index in matched_predictions:
-            continue
-        track_id = summary["next_track_id"]
-        summary["next_track_id"] += 1
-        prediction.track_id = track_id
-        new_box = (
-            prediction.x,
-            prediction.y,
-            prediction.width,
-            prediction.height,
-        )
-        new_center = _bbox_center(new_box)
-        tracks[track_id] = {
-            "object_class": prediction.object_class,
-            "first_seen": current_step,
-            "first_center": new_center,
-            "last_bbox": new_box,
-            "last_center": new_center,
-            "velocity": (0.0, 0.0),
-            "last_seen": current_step,
-            "hits": 1,
-            "best_confidence": prediction.detection_confidence,
-            "size_votes": {prediction.size_class: 1},
-        }
-
-
-def _finalize_video_summary(summary: dict) -> dict:
-    all_tracks = list(summary["tracks"].values())
-    confirmed_tracks = [track for track in all_tracks if track["hits"] >= 2]
-    counted_tracks = confirmed_tracks or all_tracks
-    size_counts = {"대형": 0, "중형": 0, "소형": 0}
-    object_counts = {"ship": 0, "drone": 0, "person": 0}
-    for track in counted_tracks:
-        object_class = track["object_class"]
-        object_counts[object_class] = object_counts.get(object_class, 0) + 1
-        if object_class == "ship":
-            size_class = max(track["size_votes"], key=track["size_votes"].get)
-            size_counts[size_class] = size_counts.get(size_class, 0) + 1
-
-    total = len(counted_tracks)
-    confidence_sum = sum(track["best_confidence"] for track in counted_tracks)
-    return {
-        "total": total,
-        "size_counts": size_counts,
-        "object_counts": object_counts,
-        "avg_detection_confidence": round(confidence_sum / total, 2) if total else 0.0,
-        "avg_classification_confidence": 0.0,
-        "count_label": "고유 객체 수",
-        "breakdown_label": "객체별 고유 개수",
-    }
-
-
-@st.cache_data(
-    show_spinner=False,
-    ttl=3600,
-    max_entries=1,
-)
-def process_video_bytes(data: bytes, suffix: str, task: str):
-    input_path = output_path = None
-    capture = writer = None
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix or ".mp4") as input_file:
-            input_file.write(data)
-            input_path = input_file.name
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as output_file:
-            output_path = output_file.name
-
-        capture = cv2.VideoCapture(input_path)
-        if not capture.isOpened():
-            raise ValueError("영상 파일을 열 수 없습니다.")
-
-        source_fps = float(capture.get(cv2.CAP_PROP_FPS) or 24.0)
-        if not math.isfinite(source_fps) or source_fps <= 0:
-            source_fps = 24.0
-        source_width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
-        source_height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-
-        output_scale = min(
-            1.0,
-            VIDEO_MAX_DIMENSION / max(source_width, source_height, 1),
-        )
-        width = max(2, int(round(source_width * output_scale / 2)) * 2)
-        height = max(2, int(round(source_height * output_scale / 2)) * 2)
-        output_stride = max(1, int(round(source_fps / min(source_fps, VIDEO_OUTPUT_FPS))))
-        output_fps = source_fps / output_stride
-        inference_stride = max(1, int(round(source_fps / VIDEO_INFERENCE_FPS)))
-        if frame_count > 0:
-            inference_stride = max(
-                inference_stride,
-                math.ceil(frame_count / VIDEO_MAX_INFERENCE_CALLS),
-            )
-
-        writer = imageio_ffmpeg.write_frames(
-            output_path,
-            (width, height),
-            pix_fmt_in="rgb24",
-            pix_fmt_out="yuv420p",
-            fps=output_fps,
-            quality=6,
-            codec="libx264",
-            macro_block_size=2,
-            ffmpeg_log_level="error",
-            output_params=["-preset", "veryfast", "-movflags", "+faststart"],
-        )
-        writer.send(None)
-
-        fallback_image = fallback_result = None
-        preview_image = preview_result = None
-        preview_frame_index = 0
-        latest_result = None
-        latest_predictions = []
-        video_summary = _new_video_summary(width, height)
-        source_frame_index = 0
-        next_inference_frame = 0
-        analyzed_frames = 0
-        written_frames = 0
-
-        while True:
-            ok, frame = capture.read()
-            if not ok:
-                break
-
-            if source_frame_index % output_stride == 0:
-                if (frame.shape[1], frame.shape[0]) != (width, height):
-                    frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
-                image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-
-                if latest_result is None or source_frame_index >= next_inference_frame:
-                    pipeline_result = run_pipeline(image, task=task)
-                    latest_result = pipeline_result
-                    latest_predictions = pipeline_result.predictions
-                    _accumulate_video_summary(video_summary, latest_predictions)
-                    analyzed_frames += 1
-                    next_inference_frame = source_frame_index + inference_stride
-                    if fallback_result is None:
-                        fallback_image = image
-                        fallback_result = pipeline_result
-                    if preview_result is None and latest_predictions:
-                        preview_image = image
-                        preview_result = pipeline_result
-                        preview_frame_index = source_frame_index
-
-                annotated = draw_predictions(image, latest_predictions)
-                annotated_array = np.ascontiguousarray(annotated, dtype=np.uint8)
-                writer.send(annotated_array)
-                written_frames += 1
-
-            source_frame_index += 1
-
-        capture.release()
-        capture = None
-        writer.close()
-        writer = None
-        if fallback_image is None or fallback_result is None or written_frames == 0:
-            raise ValueError("영상에 처리할 프레임이 없습니다.")
-
-        if preview_image is None or preview_result is None:
-            preview_image = fallback_image
-            preview_result = fallback_result
-            preview_frame_index = 0
-
-        with open(output_path, "rb") as result_file:
-            video_bytes = result_file.read()
-        return (
-            video_bytes,
-            preview_image,
-            preview_result,
-            preview_result.predictions,
-            frame_count,
-            analyzed_frames,
-            _finalize_video_summary(video_summary),
-            output_fps,
-            preview_frame_index,
-        )
-    finally:
-        if capture is not None:
-            capture.release()
-        if writer is not None:
-            writer.close()
-        for path in (input_path, output_path):
-            if path and os.path.exists(path):
-                try:
-                    os.remove(path)
-                except PermissionError:
-                    # Windows/FFmpeg can release a video handle a moment late.
-                    pass
-
-
-def process_upload(uploaded_file, task: str = "detection", environment: str | None = None):
+def process_upload(
+    uploaded_file,
+    task: str = "detection",
+    environment: str | None = None,
+    progress_callback=None,
+):
     data = uploaded_file.getvalue()
+    upload_size_mb = len(data) / (1024 * 1024)
+    if upload_size_mb > MAX_UPLOAD_MB:
+        raise ValueError(
+            f"파일 크기는 최대 {MAX_UPLOAD_MB}MB까지 지원합니다. "
+            f"현재 파일은 {upload_size_mb:.1f}MB입니다."
+        )
     name = uploaded_file.name
     suffix = "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""
 
@@ -2311,7 +1984,12 @@ def process_upload(uploaded_file, task: str = "detection", environment: str | No
             summary,
             output_fps,
             preview_frame_index,
-        ) = process_video_bytes(data, suffix or ".mp4", task)
+        ) = process_video_bytes(
+            data,
+            suffix or ".mp4",
+            task,
+            _progress_callback=progress_callback,
+        )
         frame_index = preview_frame_index
         media_meta = (
             f"Video · {frame_count} frames · "
@@ -2336,6 +2014,10 @@ def process_upload(uploaded_file, task: str = "detection", environment: str | No
             "output_fps": round(output_fps, 2),
             "preview_frame_index": preview_frame_index,
         }
+        json_payload["tracking"] = {
+            "diagnostics": summary.get("tracking_diagnostics", {}),
+            "tracks": summary.get("tracks", []),
+        }
 
     return {
         "image": image,
@@ -2349,6 +2031,28 @@ def process_upload(uploaded_file, task: str = "detection", environment: str | No
         "is_video": mime_type.startswith("video") or suffix in video_suffixes,
         "mode": pipeline_result.mode,
     }
+
+
+def build_summary_csv(filename: str, summary: dict, mode: str) -> bytes:
+    buffer = io.StringIO(newline="")
+    writer = csv.writer(buffer)
+    writer.writerow(["section", "name", "value"])
+    writer.writerow(["media", "filename", filename])
+    writer.writerow(["pipeline", "mode", mode])
+    writer.writerow(["summary", "unique_objects", summary.get("total", 0)])
+    writer.writerow(
+        ["summary", "mean_detection_confidence", summary.get("avg_detection_confidence", 0.0)]
+    )
+    for object_class, count in summary.get("object_counts", {}).items():
+        writer.writerow(["object_count", object_class, count])
+    for name, value in summary.get("tracking_diagnostics", {}).items():
+        writer.writerow(["tracking", name, value])
+    for track in summary.get("tracks", []):
+        track_id = track.get("track_id", "")
+        for name, value in track.items():
+            if name != "track_id":
+                writer.writerow([f"track_{track_id}", name, value])
+    return buffer.getvalue().encode("utf-8-sig")
 
 
 def render_dashboard_tab1(summary: dict | None = None, mode: str = "demo"):
@@ -2442,7 +2146,26 @@ def render_dashboard_tab2(summary: dict | None = None, mode: str = "demo"):
 # Hero Header
 # ============================================================
 
-st.markdown("""
+model_status = get_model_status()
+classification_status = get_classification_status()
+detection_ready = bool(
+    model_status["roboflow_configured"] or model_status["yolo_loaded"]
+)
+classification_ready = bool(classification_status["configured"])
+if detection_ready and classification_ready:
+    system_status = "Configured"
+    system_status_color = "#7fc6a4"
+elif detection_ready:
+    system_status = "Detection only"
+    system_status_color = "#d9b879"
+elif model_status["demo_mode_allowed"]:
+    system_status = "Demo enabled"
+    system_status_color = "#d9b879"
+else:
+    system_status = "Not configured"
+    system_status_color = "#e88c8c"
+
+st.markdown(f"""
 <div class="hero-header">
     <div class="hero-badge">MARITIME MONITORING</div>
     <div class="hero-top">
@@ -2453,7 +2176,7 @@ st.markdown("""
         <div class="hero-stats">
             <div class="hero-stat-item">Detection <span>YOLOv26</span></div>
             <div class="hero-stat-item">Classification <span>ViT</span></div>
-            <div class="hero-stat-item">Status <span style="color:#7fc6a4">Active</span></div>
+            <div class="hero-stat-item">Status <span style="color:{system_status_color}">{system_status}</span></div>
         </div>
     </div>
 </div>
@@ -2505,6 +2228,28 @@ with tab1:
         )
         processing_meta = "FRAME PIPELINE" if is_processing_video else "IMAGE PIPELINE"
         processing_placeholder = st.empty()
+        progress_placeholder = st.empty()
+        progress_started_at = time.perf_counter()
+
+        def update_video_progress(progress: float, current_frame: int, total_frames: int):
+            elapsed = max(0.0, time.perf_counter() - progress_started_at)
+            if progress > 0 and progress < 1:
+                remaining = elapsed * (1 - progress) / progress
+                time_text = f"경과 {elapsed:.0f}초 · 예상 {remaining:.0f}초 남음"
+            elif progress >= 1:
+                time_text = f"완료 · {elapsed:.0f}초"
+            else:
+                time_text = "영상 정보를 확인하고 있습니다"
+            frame_text = (
+                f"{min(current_frame, total_frames):,} / {total_frames:,} 프레임"
+                if total_frames > 0
+                else f"{current_frame:,} 프레임"
+            )
+            progress_placeholder.progress(
+                progress,
+                text=f"{frame_text} · {time_text}",
+            )
+
         processing_placeholder.markdown(
             f"""
             <div class="processing-state" role="status" aria-live="polite">
@@ -2521,16 +2266,26 @@ with tab1:
             unsafe_allow_html=True,
         )
         try:
-            result = process_upload(uploaded_file, task="detection")
+            result = process_upload(
+                uploaded_file,
+                task="detection",
+                progress_callback=update_video_progress if is_processing_video else None,
+            )
         except Exception as exc:
             st.error(f"파일 처리 중 오류: {exc}")
         finally:
             processing_placeholder.empty()
+            progress_placeholder.empty()
 
     if result is not None:
         info_col, replace_col = st.columns([7, 1.4])
         with info_col:
-            st.markdown(f'<div class="result-file-bar">{uploaded_file.name} · {result["media_meta"]}</div>', unsafe_allow_html=True)
+            safe_filename = html.escape(str(uploaded_file.name))
+            safe_media_meta = html.escape(str(result["media_meta"]))
+            st.markdown(
+                f'<div class="result-file-bar">{safe_filename} · {safe_media_meta}</div>',
+                unsafe_allow_html=True,
+            )
         with replace_col:
             st.button("↻ 파일 변경", key="replace_live_upload", on_click=clear_uploaded_file, args=("live_upload",), use_container_width=True)
 
@@ -2556,15 +2311,61 @@ with tab1:
                     st.code(result["json_text"], language="json")
         with status_col:
             render_dashboard_tab1(result["summary"], result["mode"])
+
+        safe_base_name = "".join(
+            character
+            for character in os.path.splitext(uploaded_file.name)[0]
+            if character.isalnum() or character in {"-", "_"}
+        ) or "marine_result"
+        download_columns = st.columns(3, gap="small")
+        with download_columns[0]:
+            if result["is_video"]:
+                st.download_button(
+                    "결과 영상 다운로드",
+                    data=result["video_bytes"],
+                    file_name=f"{safe_base_name}_detected.mp4",
+                    mime="video/mp4",
+                    use_container_width=True,
+                )
+            else:
+                image_buffer = io.BytesIO()
+                result["annotated"].save(image_buffer, format="PNG")
+                st.download_button(
+                    "결과 이미지 다운로드",
+                    data=image_buffer.getvalue(),
+                    file_name=f"{safe_base_name}_detected.png",
+                    mime="image/png",
+                    use_container_width=True,
+                )
+        with download_columns[1]:
+            st.download_button(
+                "JSON 다운로드",
+                data=result["json_text"].encode("utf-8"),
+                file_name=f"{safe_base_name}_result.json",
+                mime="application/json",
+                use_container_width=True,
+            )
+        with download_columns[2]:
+            st.download_button(
+                "CSV 요약 다운로드",
+                data=build_summary_csv(
+                    uploaded_file.name,
+                    result["summary"],
+                    result["mode"],
+                ),
+                file_name=f"{safe_base_name}_summary.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
         if view_mode == "Visual":
             render_selected_crop(result["image"], result["predictions"], selected_box)
     elif uploaded_file is not None:
         st.button("파일 다시 선택", key="retry_live_upload", on_click=clear_uploaded_file, args=("live_upload",))
     else:
-        st.markdown("""
+        st.markdown(f"""
         <div class="output-visual-wrap empty">
             <div class="video-placeholder-text">파일을 업로드하면 함정 · 드론 · 사람 통합 탐지 결과를 표시합니다</div>
-            <div class="video-placeholder-sub">하나의 Object Detection 모델이 세 객체를 중복 탐지합니다</div>
+            <div class="video-placeholder-sub">최대 {MAX_UPLOAD_MB}MB · 영상 {MAX_VIDEO_SECONDS}초 · JPG, PNG, MP4, AVI, MOV</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -2638,7 +2439,110 @@ with tab3:
         """, unsafe_allow_html=True)
 
     except Exception as exc:
-        st.error(f"Roboflow 성능평가 연동 오류: {exc}")
+        if not model_status["roboflow_configured"]:
+            st.info(
+                "Roboflow API가 설정되면 실제 모델 성능평가 결과가 표시됩니다."
+            )
+        else:
+            st.error(f"Roboflow 성능평가 연동 오류: {exc}")
+
+    st.markdown('<div class="section-title">영상 추적 진단</div>', unsafe_allow_html=True)
+    if result is not None and result["is_video"]:
+        diagnostics = result["summary"].get("tracking_diagnostics", {})
+        tracking_columns = st.columns(4, gap="small")
+        tracking_columns[0].metric(
+            "확정 트랙",
+            diagnostics.get("confirmed_tracks", 0),
+        )
+        tracking_columns[1].metric(
+            "잠정 트랙",
+            diagnostics.get("tentative_tracks", 0),
+        )
+        tracking_columns[2].metric(
+            "트랙당 평균 관측",
+            diagnostics.get("mean_observations_per_track", 0.0),
+        )
+        tracking_columns[3].metric(
+            "분석 프레임",
+            diagnostics.get("analyzed_steps", 0),
+        )
+        st.caption(
+            "현재 업로드 영상에서 계산한 운영 진단입니다. "
+            "정확도 수치가 아니라 추적 지속성과 잠정 탐지 규모를 보여줍니다."
+        )
+    else:
+        st.info("객체 탐지 탭에서 영상을 분석하면 실제 추적 진단이 표시됩니다.")
+
+    with st.expander("분류·추적 정량평가 CSV", expanded=False):
+        st.caption(
+            "분류 CSV: true_label, predicted_label · "
+            "추적 CSV: true_count, predicted_count, id_switches(선택)"
+        )
+        classification_eval_col, tracking_eval_col = st.columns(2, gap="medium")
+        with classification_eval_col:
+            classification_eval_file = st.file_uploader(
+                "톤급 분류 평가 CSV",
+                type=["csv"],
+                key="classification_eval_csv",
+            )
+            if classification_eval_file is not None:
+                try:
+                    classification_evaluation = calculate_classification_metrics(
+                        read_csv_rows(classification_eval_file.getvalue())
+                    )
+                    class_metric_columns = st.columns(2)
+                    class_metric_columns[0].metric(
+                        "Accuracy",
+                        f"{classification_evaluation['accuracy']:.4f}",
+                    )
+                    class_metric_columns[1].metric(
+                        "Macro F1",
+                        f"{classification_evaluation['macro_f1']:.4f}",
+                    )
+                    st.caption(
+                        f"실제 평가 샘플 {classification_evaluation['samples']}개"
+                    )
+                    confusion_rows = []
+                    for true_label in classification_evaluation["labels"]:
+                        row = {"실제 클래스": true_label}
+                        row.update(classification_evaluation["confusion_matrix"][true_label])
+                        confusion_rows.append(row)
+                    st.dataframe(
+                        confusion_rows,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                except Exception as exc:
+                    st.error(f"분류 평가 CSV 오류: {exc}")
+        with tracking_eval_col:
+            tracking_eval_file = st.file_uploader(
+                "영상 추적 평가 CSV",
+                type=["csv"],
+                key="tracking_eval_csv",
+            )
+            if tracking_eval_file is not None:
+                try:
+                    tracking_evaluation = calculate_tracking_metrics(
+                        read_csv_rows(tracking_eval_file.getvalue())
+                    )
+                    track_metric_columns = st.columns(2)
+                    track_metric_columns[0].metric(
+                        "Count MAE",
+                        f"{tracking_evaluation['count_mae']:.3f}",
+                    )
+                    track_metric_columns[1].metric(
+                        "정확 집계율",
+                        f"{tracking_evaluation['exact_count_rate'] * 100:.1f}%",
+                    )
+                    st.metric(
+                        "ID 변경 횟수",
+                        tracking_evaluation["total_id_switches"],
+                    )
+                    st.caption(
+                        f"실제 평가 영상 {tracking_evaluation['videos']}개"
+                    )
+                except Exception as exc:
+                    st.error(f"추적 평가 CSV 오류: {exc}")
 
 
 # ============================================================
